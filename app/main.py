@@ -602,10 +602,6 @@ def _target_context(targeting_json: str) -> tuple[PublicCatalog, dict[str, Respo
     return catalog, build_curves(collect_retro_history(catalog), catalog)
 
 
-def _context(media_plan: MediaPlan) -> tuple[PublicCatalog, dict[str, ResponseCurve]]:
-    return _target_context(media_plan.brief.targeting.model_dump_json())
-
-
 def _plan(plan_id: str) -> MediaPlan:
     try:
         return state.plans[plan_id]
