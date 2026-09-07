@@ -70,6 +70,24 @@
   .presets .btn.preset{height:26px;padding:0 4px;font-family:var(--font-body);font-weight:400;font-size:13px;color:var(--color-neutral-700);background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0}
   .presets .btn.preset:hover{color:var(--color-text);border-bottom-color:var(--color-neutral-400)}
   .presets .btn.preset.on{color:var(--color-text);font-weight:600;border-bottom-color:var(--color-accent)}
+  /* География: слева теги округов, справа карта; на узком экране — друг под другом */
+  .geo{display:grid;grid-template-columns:minmax(260px,1fr) minmax(300px,1fr);gap:24px;align-items:start}
+  .map{max-width:560px;margin-left:auto;width:100%}
+  .map svg{width:100%;height:auto;display:block}
+  .map path{fill:var(--color-neutral-200);stroke:var(--color-bg);stroke-width:.7}
+  .map g[data-district]{cursor:pointer}
+  .map g[data-district]:hover path{fill:var(--color-neutral-400)}
+  .map g.on path{fill:var(--color-text)}
+  .map g.on:hover path{fill:var(--color-accent-700)}
+  .map.readonly g[data-district]{cursor:default}
+  .map.readonly g[data-district]:hover path{fill:inherit}
+  .sliders{display:grid;gap:10px;margin-top:12px}
+  .sl{display:grid;grid-template-columns:minmax(150px,1.1fr) minmax(120px,2fr) auto auto;gap:12px;align-items:center;font-size:14px}
+  .sl input[type=range]{width:100%;accent-color:var(--color-accent);height:20px}
+  .sl .val{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;min-width:104px}
+  .sl .pin{font-size:11px;color:var(--color-neutral-700);white-space:nowrap;min-width:78px}
+  .sl.fixed .pin{color:var(--color-accent-700)}
+  @media (max-width:900px){.geo{grid-template-columns:1fr}.sl{grid-template-columns:1fr auto;gap:6px}.sl input[type=range]{grid-column:1 / -1}}
   button.tag.add{background:transparent;border:1px dashed var(--color-accent);color:var(--color-accent)}
   button.tag.shock{background:var(--color-accent-100);color:var(--color-accent-800);border-color:var(--color-accent-300)}
   button.tag .x{opacity:.7}
@@ -96,6 +114,20 @@
   .nav{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:12px 32px;background:var(--color-bg);border-bottom:2px solid var(--color-divider)}
   .nav-brand{display:flex;align-items:center;gap:10px;font-family:var(--font-heading);font-weight:var(--font-heading-weight);font-size:16px;white-space:nowrap}
   .nav-brand .logo{width:24px;height:24px;display:block}
+  .ver{font-family:var(--font-body);font-weight:500;font-size:11px;line-height:1;color:var(--color-neutral-700);border:1px solid var(--color-divider);padding:3px 5px;letter-spacing:.02em}
+  /* Подвал: та же сетка, что у экранов; печатать его не нужно */
+  .foot{border-top:2px solid var(--color-divider);margin-top:64px;padding:32px;background:var(--color-bg)}
+  .foot-top{display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:start;max-width:1360px;margin:0 auto}
+  .foot-brand{display:flex;align-items:center;gap:10px;font-family:var(--font-heading);font-weight:var(--font-heading-weight);font-size:15px;white-space:nowrap}
+  .foot-lead{margin:0;max-width:760px;color:var(--color-neutral-700);font-size:14px;line-height:1.5}
+  .foot-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;max-width:1360px;margin:28px auto 0}
+  .foot-cols h6{margin-bottom:6px}
+  .foot-cols p{margin:0;font-size:13px;line-height:1.5;color:var(--color-neutral-700)}
+  .foot-cols code{font-size:12px;background:var(--color-neutral-200);padding:1px 4px}
+  .foot-bottom{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;max-width:1360px;margin:28px auto 0;padding-top:16px;border-top:1px solid var(--color-divider);font-size:12px;color:var(--color-neutral-700)}
+  .foot-bottom a{color:var(--color-text)}
+  @media (max-width:900px){.foot{padding:24px 16px}.foot-top{grid-template-columns:1fr}.foot-cols{grid-template-columns:1fr;gap:20px}}
+  @media print{.foot,.nav,#controls{display:none!important}}
   .steps{display:flex;gap:4px;flex-wrap:wrap}
   .step{gap:8px;padding:8px 12px;border-bottom:2px solid transparent;font-size:14px}
   .step .num{font-size:11px;opacity:.7}
@@ -189,7 +221,7 @@
 </head>
 <body data-level="simple">
 <div class="nav">
-  <div class="nav-brand"><img class="logo" src="/static/logo.svg" alt="" width="24" height="24">MediaPlan Optimizer</div>
+  <div class="nav-brand"><img class="logo" src="/static/logo.svg" alt="" width="24" height="24">MediaPlan Optimizer<span class="ver" id="app-version" title="версия кабинета">—</span></div>
   <div class="steps" id="steps">
     <button class="btn step cur" data-go="brief"><span class="num">01</span><span class="lbl">Бриф</span><small class="st">цель, бюджет, срок, каналы</small></button>
     <button class="btn step" data-go="plan" disabled><span class="num">02</span><span class="lbl">Медиаплан</span><small class="st">после расчёта</small></button>
@@ -219,6 +251,14 @@
     <div class="presets"><span class="muted">Быстрый выбор набора:</span><div id="preset-chips"></div></div>
     <div class="tags" id="channel-chips"></div>
   </div>
+  <div class="field" style="margin-top:24px" id="f-geo"><label>География · <span id="geo-count"></span></label>
+    <div class="presets"><span class="muted">Быстрый выбор:</span><div id="geo-presets"></div></div>
+    <div class="geo">
+      <div><div class="tags" id="geo-chips"></div>
+        <p class="muted" id="geo-note" style="margin-top:12px"></p></div>
+      <div class="map" id="geo-map"></div>
+    </div>
+  </div>
   <details class="more" id="rules"><summary>Обещание и правила ведения кампании: запас, лимит переноса, перевыполнение<span id="rules-cpa">, потолок цены</span></summary>
     <div class="fields" style="margin-top:12px">
       <div class="field"><label>Что записываем как обещание</label><select class="input" id="promise"><option value="median">как посчитали — по прогнозу</option><option value="cautious">с запасом — меньше, зато почти наверняка</option></select></div>
@@ -234,8 +274,9 @@
     <span class="muted">или посмотреть пример:</span>
     <button class="btn btn-secondary btn-sm" id="btn-demo1">1,2 млн&nbsp;₽ на 21 день</button>
     <button class="btn btn-secondary btn-sm" id="btn-demo2">цель, которой не достичь</button>
+    <button class="btn btn-secondary btn-sm" id="btn-demo3">один округ: 400 тыс.&nbsp;₽ на Центральный</button>
   </div>
-  <p class="muted" id="brief-note" style="margin-top:16px;max-width:640px"><span class="tech">Первый пример: максимум конверсий на всех восьми каналах. Второй: цель на узком наборе недостижима — сервис откажет и предложит три варианта с посчитанным бюджетом.</span></p>
+  <p class="muted" id="brief-note" style="margin-top:16px;max-width:640px"><span class="tech">Первый пример: максимум конверсий на всех восьми каналах по всей стране. Второй: цель на узком наборе недостижима — сервис откажет и предложит три варианта с посчитанным бюджетом. Третий: та же задача в одном округе — ёмкость каналов пересчитана на его аудиторию, бюджет соразмерен.</span></p>
 </section>
 
 <!-- 02 · Медиаплан -->
@@ -293,6 +334,22 @@
 </section>
 
 </main>
+
+<footer class="foot">
+  <div class="foot-top">
+    <div class="foot-brand"><img class="logo" src="/static/logo.svg" alt="" width="22" height="22">MediaPlan Optimizer<span class="ver" id="foot-version">—</span></div>
+    <p class="foot-lead">Кейс МТС «Оптимизация медиапланирования», хакатон ИТМО, 2026. Учебный прототип: каналы абстрактные, рынок — симулятор, цифры не выдаются за статистику реальных площадок.</p>
+  </div>
+  <div class="foot-cols">
+    <div><h6>Откуда числа</h6><p>Бенчмарки каналов — из публичных источников со ссылкой у каждого значения (<code>config/benchmarks.yaml</code>). Население округов — сводка данных Росстата, карта — Natural Earth (public domain).</p></div>
+    <div><h6>Как это считается</h6><p>Планировщик и исполнитель не видят истинных параметров мира: только публичный каталог и часовые агрегаты. Прогноз даётся с разбросом, решение проверяется на многих мирах.</p></div>
+    <div><h6>Команда</h6><p>Родион Оркин — планировщик и исполнитель.<br>Тимофей Лисоченко — модель мира.<br>Георгий Мамарин — продукт и кабинет.</p></div>
+  </div>
+  <div class="foot-bottom">
+    <span id="foot-geo-src">Карта: Natural Earth · население: Росстат</span>
+    <a href="https://github.com/avanturer/mediaplan-optimizer" target="_blank" rel="noopener">Репозиторий проекта</a>
+  </div>
+</footer>
 <script>
 const $ = (s) => document.querySelector(s);
 const fmt = (n, d=0) => n == null || !isFinite(n) ? '—' : Number(n).toLocaleString('ru-RU', {maximumFractionDigits: d, minimumFractionDigits: d}).replace('-', '−');
@@ -331,7 +388,7 @@ const h2 = (a, b) => `<span class="w2">${a}<br>${b}</span>`;
 const stat = (t) => `<div class="stat ${t[3] || ''}"${t[4] ? ` title="${esc(t[4])}"` : ''}><div class="lbl">${t[0]}</div><div class="val">${t[1]}</div><div class="note">${t[2]}</div></div>`;
 let META = null, PLAN = null, RUN = null, CHARTS = {}, PLAYER = {h:0, timer:null, speed:6};
 // Состояние формы, которого нет в инпутах: постановка, набор каналов, выбранный сценарий, свои шоки, вид таблицы плана
-let FORM = {mode: 'A', channel_ids: [], scenario: 'channel_pause'}, SHOCKS = [], VIEW = {allMetrics: null, calendar: false};
+let FORM = {mode: 'A', channel_ids: [], scenario: 'channel_pause', locked: {}}, SHOCKS = [], VIEW = {allMetrics: null, calendar: false};
 let NAME = {}, STRATEGY_RU = {}, BINDING_RU = {};
 const nm = (id) => NAME[id] || id;
 // Строки из бэкенда содержат id каналов, английские имена KPI и запятую в тысячах — переводим на фронте, не трогая brain
@@ -428,6 +485,10 @@ async function init() {
   try { META = await api('/api/meta'); }
   catch (e) { $('#brief-note').innerHTML = `<span class="err">Сервер недоступен: ${esc(ru(e.message))}</span>`; return; }
   NAME = Object.fromEntries(META.catalog.channels.map(c => [c.channel_id, c.display_name]));
+  const ver = 'v' + (META.version || '—');
+  $('#app-version').textContent = ver; $('#foot-version').textContent = ver;
+  $('#foot-geo-src').innerHTML = `Карта округов: Natural Earth (public domain) · население на ${esc(META.geo.population_as_of_title || META.geo.population_as_of)}: <a href="${esc(META.geo.source_url)}" target="_blank" rel="noopener">сводка данных Росстата</a>`;
+  renderGeo(); loadMap();
   STRATEGY_RU = META.strategy_titles || {}; BINDING_RU = META.binding_titles || {};
   setChannels(META.presets.all ? META.presets.all.channels : META.catalog.channels.map(c => c.channel_id));
   if (!META.scenarios[FORM.scenario]) FORM.scenario = 'stable';
@@ -439,8 +500,9 @@ async function init() {
   $('#horizon').max = META.max_horizon_days || 30;
   renderShockChips();
   $('#btn-plan').onclick = () => makePlan(); $('#btn-plan-top').onclick = () => makePlan();
-  $('#btn-demo1').onclick = () => { setMode('A'); setChannels(META.presets.all.channels); setMoney('budget', 1200000); $('#horizon').value=21; $('#objective').value='max_conversions'; $('#promise').value='median'; setMoney('max_cpa', ''); setMoney('auto_limit', 50000); syncCpa(); makePlan(); };
-  $('#btn-demo2').onclick = () => { setMode('B'); setChannels(META.presets.narrow.channels); $('#target_kpi').value='clicks'; setMoney('target_value', 50000); $('#horizon').value=14; $('#promise').value='median'; setMoney('max_cpa', ''); setMoney('auto_limit', ''); syncCpa(); makePlan(); };
+  $('#btn-demo1').onclick = () => { setMode('A'); setChannels(META.presets.all.channels); setRegions([]); FORM.locked = {}; setMoney('budget', 1200000); $('#horizon').value=21; $('#objective').value='max_conversions'; $('#promise').value='median'; setMoney('max_cpa', ''); setMoney('auto_limit', 50000); syncCpa(); makePlan(); };
+  $('#btn-demo3').onclick = () => { setMode('A'); setChannels(META.presets.all.channels); setRegions(['cfo']); FORM.locked = {}; setMoney('budget', 400000); $('#horizon').value=21; $('#objective').value='max_conversions'; $('#promise').value='median'; setMoney('max_cpa', ''); setMoney('auto_limit', 20000); syncCpa(); makePlan(); };
+  $('#btn-demo2').onclick = () => { setMode('B'); setChannels(META.presets.narrow.channels); setRegions([]); FORM.locked = {}; $('#target_kpi').value='clicks'; setMoney('target_value', 50000); $('#horizon').value=14; $('#promise').value='median'; setMoney('max_cpa', ''); setMoney('auto_limit', ''); syncCpa(); makePlan(); };
   $('#btn-run').onclick = () => runCampaign();
   $('#btn-compare').onclick = () => compareStrategies();
   $('#btn-degrade').onclick = () => degradationTest();
@@ -450,9 +512,61 @@ async function init() {
 }
 
 // ---------- каналы: теги и пресеты ----------
+// ---------- география: округа, карта, доля аудитории ----------
+// GEO.ids пустой — вся Россия. Так бриф не зависит от того, сколько округов в справочнике
+const GEO = {ids: [], split: {}, loaded: false};
+const geoAll = () => META.geo.districts.map(d => d.id);
+const geoOf = (id) => META.geo.districts.find(d => d.id === id) || {title: id, weight: 0, center: ''};
+const geoSelected = () => GEO.ids.length ? GEO.ids : geoAll();
+const geoShare = () => GEO.ids.length ? GEO.ids.reduce((sum, id) => sum + geoOf(id).weight, 0) : 1;
+const GEO_PRESETS = [
+  {title: 'Вся Россия', ids: []},
+  {title: 'Европейская часть', ids: ['cfo', 'szfo', 'yufo', 'skfo', 'pfo']},
+  {title: 'За Уралом', ids: ['ufo', 'sfo', 'dfo']},
+  {title: 'Только Центральный', ids: ['cfo']},
+];
+function setRegions(ids) {
+  const all = geoAll();
+  // выбраны все или ни одного — это «вся Россия»: держим пустой список, чтобы бриф читался одинаково
+  GEO.ids = !ids.length || ids.length === all.length ? [] : all.filter(i => ids.includes(i));
+  GEO.split = {};
+  renderGeo();
+}
+async function loadMap() {
+  if (GEO.loaded) return;
+  try {
+    GEO.svgText = await (await fetch('/static/russia.svg')).text();
+    for (const box of document.querySelectorAll('.map')) box.innerHTML = GEO.svgText;
+    GEO.loaded = true;
+    $('#geo-map').querySelectorAll('g[data-district]').forEach(g => {
+      const id = g.dataset.district;
+      g.setAttribute('title', geoOf(id).title);
+      g.onclick = () => { const cur = geoSelected(); setRegions(cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]); };
+    });
+    renderGeo();
+  } catch (e) { $('#geo-map').innerHTML = '<p class="muted">карту не загрузили, округа выбираются тегами</p>'; }
+}
+function renderGeo() {
+  const sel = geoSelected(), all = geoAll(), share = geoShare();
+  $('#geo-presets').innerHTML = GEO_PRESETS.map((g, i) => `<button type="button" class="btn preset ${sameSet(g.ids.length ? g.ids : all, sel) ? 'on' : ''}" data-i="${i}">${esc(g.title)}</button>`).join('');
+  $('#geo-presets').querySelectorAll('button').forEach(b => b.onclick = () => setRegions(GEO_PRESETS[+b.dataset.i].ids));
+  $('#geo-chips').innerHTML = META.geo.districts.map(d => `<button type="button" class="tag ${sel.includes(d.id) ? 'on' : ''}" data-g="${d.id}" title="${esc(d.center)} · ${pct(d.weight, 0)} населения страны">${esc(d.title)}</button>`).join('');
+  $('#geo-chips').querySelectorAll('button').forEach(b => b.onclick = () => { const id = b.dataset.g; setRegions(sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]); });
+  $('#geo-count').textContent = GEO.ids.length ? `${sel.length} ${pw(sel.length, ['округ','округа','округов'])} · ${pct(share, 0)} аудитории страны` : 'вся Россия';
+  $('#geo-note').innerHTML = GEO.ids.length
+    ? `Ёмкость каналов пересчитана на выбранную географию: доступно ${pct(share, 0)} аудитории страны. Чем уже география, тем меньше людей можно охватить и тем дороже результат.<span class="tech"> Деление бюджета между округами — плановое: кампанию по часам симулятор ведёт целиком.</span>`
+    : 'Кампания на всю страну. Выберите округа тегами или на карте, если она только для части России; ёмкость каналов пересчитается на их аудиторию.';
+  const map = $('#geo-map');
+  if (map) map.querySelectorAll('g[data-district]').forEach(g => g.classList.toggle('on', sel.includes(g.dataset.district)));
+}
+
 const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x));
 function presetOf(ids) { return Object.keys(META.presets).find(k => sameSet(META.presets[k].channels, ids)) || null; }
-function setChannels(ids) { FORM.channel_ids = META.catalog.channels.map(c => c.channel_id).filter(c => ids.includes(c)); renderChannelChips(); }
+function setChannels(ids) {
+  FORM.channel_ids = META.catalog.channels.map(c => c.channel_id).filter(c => ids.includes(c));
+  FORM.locked = Object.fromEntries(Object.entries(FORM.locked || {}).filter(([id]) => FORM.channel_ids.includes(id)));
+  renderChannelChips();
+}
 function renderChannelChips() {
   const cur = presetOf(FORM.channel_ids);
   $('#preset-chips').innerHTML = Object.entries(META.presets).map(([k, v]) => `<button type="button" class="btn preset ${k === cur ? 'on' : ''}" data-k="${k}">${esc(v.title)}</button>`).join('');
@@ -468,13 +582,14 @@ function briefFromForm(overrides={}) {
   if (!FORM.channel_ids.length) throw new Error('выберите хотя бы один канал');
   const req = {mode, preset: presetOf(FORM.channel_ids) || 'all', channel_ids: FORM.channel_ids, horizon_days: +$('#horizon').value,
     max_cpa_rub: num('max_cpa') || null,
-    automation_limit_rub: num('auto_limit') || null};
+    automation_limit_rub: num('auto_limit') || null,
+    regions: GEO.ids, region_split: GEO.split, locked: FORM.locked || {}};
   if (mode === 'A') { req.budget_rub = num('budget'); req.objective = $('#objective').value; }
   else { req.target_kpi = $('#target_kpi').value; req.target_value = num('target_value'); }
   return {...req, ...overrides};
 }
 
-const setBusy = (b) => ['#btn-plan', '#btn-plan-top', '#btn-demo1', '#btn-demo2'].forEach(sel => $(sel).disabled = b);
+const setBusy = (b) => ['#btn-plan', '#btn-plan-top', '#btn-demo1', '#btn-demo2', '#btn-demo3'].forEach(sel => $(sel).disabled = b);
 
 async function makePlan(overrides={}) {
   if (PLAN && PLAN.approved_version && !confirm(`План версии ${PLAN.approved_version} уже утверждён. Пересчитать заново? Утверждение и кампания будут сброшены.`)) return;
@@ -552,6 +667,7 @@ function renderPlan(p) {
       <div class="stats">${stat(['Цель', fmt(target), `${K.many} за ${days(b.horizon_days)}`, ''])}${stat(['Максимум при этих условиях', fmt(d.max_achievable), K.many, 'accent'])}${stat(['Упирается в', `<span style="font-size:22px">${esc(d.binding_title || BINDING_RU[d.binding_constraint] || d.binding_constraint)}</span>`, 'ограничение, которое не даёт дойти до цели', ''])}</div>
       <h4 style="margin:32px 0 16px">Три варианта с посчитанным результатом</h4>
       <div class="moves">${d.suggestions.map((s,i)=>`<div class="move"${s.expected_budget_rub === cheapest ? ' style="border-top:2px solid var(--color-accent)"' : ''}><div class="card-kicker">вариант ${i+1}${s.expected_budget_rub === cheapest ? ' · дешевле всего, советуем' : ''}</div><div class="card-title">${esc(ru(s.description))}</div><p class="card-body">ожидаем <b class="num">${kpiN(s.expected_kpi, p.kpi_name, true)}</b> при бюджете <b class="num">${rub(s.expected_budget_rub)}</b> — около ${fmt(s.expected_budget_rub / s.expected_kpi, s.expected_budget_rub / s.expected_kpi < 10 ? 2 : 0)}&nbsp;₽ за ${K.acc}</p>${s.applicable === false ? `<div><button class="btn btn-secondary" disabled>Применить</button> <span class="muted">${esc(s.why_not || '')}</span></div>` : `<button class="btn ${s.expected_budget_rub === cheapest ? 'btn-primary' : 'btn-secondary'}" style="align-self:flex-start" data-i="${i}">Применить и пересчитать</button>`}</div>`).join('')}</div>
+      ${GEO.ids.length ? `<p class="muted" style="margin-top:16px;max-width:760px">Ещё один ход, которого нет в списке: <b>расширить географию</b>. Сейчас выбрано ${pct(geoShare(), 0)} аудитории страны, и ёмкость каналов пересчитана на неё — на всю Россию тот же бюджет даёт заметно больше.</p>` : ''}
       <p class="muted tech" style="margin-top:24px;max-width:640px">Отказ без числа читается как нежелание расти. Здесь три варианта с посчитанным результатом: разговор с клиентом становится выбором, а не спором.</p>`;
     body.querySelectorAll('button[data-i]').forEach(bt => bt.onclick = () => applySuggestion(d.suggestions[+bt.dataset.i], +bt.dataset.i + 1));
     return;
@@ -574,9 +690,11 @@ function renderPlan(p) {
     <div class="stats" style="margin-top:24px">${tiles.map(stat).join('')}</div>
     <p class="muted" style="margin-top:8px;max-width:820px">Лимит на один перенос: ${b.automation_limit_rub ? rub(b.automation_limit_rub) + ' — переносы дороже <span class="tech">будут ждать вашего решения</span><span class="simple">решает менеджер</span> на шаге 3' : 'не задан — автоматика решает сама'}. Изменить — в брифе, блок «Обещание и правила ведения».</p>
     <div id="whatif"></div><div id="stress" class="tech"></div>
+    <div id="plan-geo"></div>
     <div class="head-row" style="margin:32px 0 16px"><h4 style="margin:0">Распределение по каналам</h4><div class="actions"><div class="seg" id="metrics-seg"><button type="button" class="btn" id="btn-metrics-brief">Кратко</button><button type="button" class="btn" id="btn-metrics-all">Все метрики</button></div><button class="btn btn-secondary btn-sm" id="btn-calendar"></button><button class="btn btn-secondary btn-sm" id="btn-csv-plan">Скачать CSV</button></div></div>
     <div id="plan-table"></div>
     <div id="plan-calendar" hidden></div>
+    <div class="tech" id="manual-block"></div>
     <p class="muted" id="plan-note" style="margin-top:16px;max-width:640px"></p>
     <div class="hr"></div>
     <div class="charts2" style="margin-top:0"><div><h6 style="margin-bottom:12px">План по ${K.dat} · разброс ±${pct(p.corridor_rel,0)}</h6><div class="chart"><canvas id="c-plan-kpi"></canvas></div></div><div><h6 style="margin-bottom:12px">Расход по дням и группам каналов, ₽</h6><div class="chart"><canvas id="c-plan-spend"></canvas></div></div></div>
@@ -587,7 +705,7 @@ function renderPlan(p) {
   $('#btn-metrics-brief').onclick = () => { VIEW.allMetrics = false; renderPlanTable(p); };
   $('#btn-metrics-all').onclick = () => { VIEW.allMetrics = true; renderPlanTable(p); };
   $('#btn-calendar').onclick = () => { VIEW.calendar = !VIEW.calendar; renderPlanTable(p); if (VIEW.calendar) $('#plan-calendar').scrollIntoView({behavior: 'smooth', block: 'nearest'}); };
-  renderPlanTable(p); planFoot(p);
+  renderPlanTable(p); renderPlanGeo(p); renderManual(p); planFoot(p);
   try {
     const hours = p.trajectory.map(t => t.hour);
     lineChart('c-plan-kpi', hours, [
@@ -598,6 +716,101 @@ function renderPlan(p) {
     dailySpendChart('c-plan-spend', p);
   } catch (e) { console.error(e); }
   if (p.approved_version) showRunSection(p);
+}
+
+// Карта с заливкой по доле бюджета: самый дорогой округ — самый насыщенный
+function paintMap(box, shares) {
+  if (!box || !GEO.svgText) return;
+  if (!box.querySelector('svg')) box.innerHTML = GEO.svgText;
+  const max = Math.max(...Object.values(shares), 0.0001);
+  box.querySelectorAll('g[data-district]').forEach(g => {
+    const share = shares[g.dataset.district];
+    const fill = share == null ? '' : `rgba(236,48,19,${(0.18 + 0.82 * share / max).toFixed(3)})`;
+    g.querySelectorAll('path').forEach(path => path.style.fill = fill);
+    g.setAttribute('title', geoOf(g.dataset.district).title + (share == null ? ' · не в кампании' : ' · ' + pct(share, 0) + ' бюджета'));
+  });
+}
+// Деление бюджета по округам: по населению или по рукам пользователя. Считаем в кабинете,
+// на сервер уходит вместе с брифом — там тот же расчёт, план от этого не меняется
+function geoSplit(total) {
+  const sel = geoSelected(), manual = Object.entries(GEO.split).filter(([id, v]) => sel.includes(id) && v > 0);
+  const manualSum = manual.reduce((sum, [, v]) => sum + v, 0);
+  const base = sel.reduce((sum, id) => sum + geoOf(id).weight, 0) || 1;
+  return sel.map(id => {
+    const share = manualSum > 0 ? (GEO.split[id] || 0) / manualSum : geoOf(id).weight / base;
+    return {id, title: geoOf(id).title, center: geoOf(id).center, share, budget: total * share};
+  });
+}
+function renderPlanGeo(p) {
+  const box = $('#plan-geo'); if (!box) return;
+  const rows = geoSplit(p.total_budget_rub), manual = rows.some(r => (GEO.split[r.id] || 0) > 0);
+  const head = GEO.ids.length ? `${rows.length} ${pw(rows.length, ['округ','округа','округов'])} · ${pct(geoShare(), 0)} аудитории страны` : 'вся Россия';
+  box.innerHTML = `<div class="head-row" style="margin:32px 0 12px"><h4 style="margin:0">География: ${head}</h4>
+      <div class="actions">${rows.length > 1 ? `<button class="btn btn-secondary btn-sm tech" id="btn-geo-even"${manual ? '' : ' disabled'}>Поделить по населению</button>` : ''}</div></div>
+    <div class="geo">
+      <div>
+        <div class="sliders tech" id="geo-sliders"></div>
+        <div class="simple">${rows.map(r => `<div class="kv"><span>${esc(r.title)}</span><span><b>${rub(Math.round(r.budget))}</b> · ${pct(r.share, 0)}</span></div>`).join('')}</div>
+        <p class="muted" style="margin-top:12px;max-width:640px">${manual ? 'Бюджет поделён вашими руками.' : 'Бюджет поделён по населению округов.'} <span class="tech">Деление между округами — плановое: прогноз и кампания по часам считаются по всей выбранной географии целиком; ёмкость каналов уже пересчитана на её аудиторию.</span></p>
+      </div>
+      <div class="map readonly" id="plan-map"></div>
+    </div>`;
+  const sliders = $('#geo-sliders');
+  if (sliders && rows.length < 2) sliders.remove();  // один округ делить не на что
+  else if (sliders) {
+    sliders.innerHTML = rows.map(r => `<div class="sl"><span>${esc(r.title)}</span>
+      <input type="range" min="0" max="100" step="1" value="${Math.round(r.share * 100)}" data-g="${r.id}">
+      <span class="val">${rub(Math.round(r.budget))}</span><span class="pin">${pct(r.share, 0)}</span></div>`).join('');
+    sliders.querySelectorAll('input[data-g]').forEach(el => {
+      el.oninput = () => {
+        // руками задаём доли; нормируем при отрисовке, поэтому сумма может не сойтись к 100 — это нормально
+        const cur = geoSplit(p.total_budget_rub);
+        GEO.split = Object.fromEntries(cur.map(r => [r.id, r.id === el.dataset.g ? +el.value : Math.round(r.share * 100)]));
+        renderPlanGeo(p);
+      };
+    });
+  }
+  const even = $('#btn-geo-even'); if (even) even.onclick = () => { GEO.split = {}; renderPlanGeo(p); };
+  paintMap($('#plan-map'), Object.fromEntries(rows.map(r => [r.id, r.share])));
+}
+
+// Ручная правка распределения: бегунок фиксирует бюджет канала, остальное планировщик раскладывает заново
+function renderManual(p) {
+  const box = $('#manual-block'); if (!box) return;
+  const total = p.total_budget_rub;
+  // канал берёт не больше своей ёмкости: если планировщик срезал фиксацию, показываем реальную сумму, а не желаемую
+  const capped = [];
+  const locked = Object.fromEntries(Object.entries(FORM.locked || {}).map(([id, want]) => {
+    const got = (p.allocations.find(a => a.channel_id === id) || {}).budget_rub;
+    if (got != null && want > got * 1.01) { capped.push({id, want, got}); return [id, got]; }
+    return [id, want];
+  }));
+  FORM.locked = locked;
+  const anyLocked = Object.keys(locked).length > 0;
+  box.innerHTML = `<div class="head-row" style="margin:32px 0 12px"><h4 style="margin:0">Поправить распределение руками</h4>
+      <div class="actions"><button class="btn btn-secondary btn-sm" id="btn-manual-reset"${anyLocked ? '' : ' disabled'}>Вернуть расчёт</button></div></div>
+    <p class="muted" style="max-width:760px">Двигаете бегунок — канал фиксируется на этой сумме, остальной бюджет планировщик раскладывает заново по тем же правилам. Так можно проверить свою идею и увидеть, чего она стоит в прогнозе.</p>
+    <div class="sliders" id="chan-sliders">${p.allocations.map(a => {
+      const fixed = locked[a.channel_id] != null;
+      return `<div class="sl ${fixed ? 'fixed' : ''}"><span>${esc(a.display_name)}</span>
+        <input type="range" min="0" max="${Math.round(total)}" step="${Math.max(1000, Math.round(total / 200))}" value="${Math.round(a.budget_rub)}" data-c="${a.channel_id}">
+        <span class="val" data-v="${a.channel_id}">${rub(Math.round(a.budget_rub))} · ${pct(a.budget_rub / (total || 1), 0)}</span>
+        ${fixed ? `<button type="button" class="btn btn-secondary btn-sm" data-unlock="${a.channel_id}">Снять</button>` : '<span class="pin">расчёт</span>'}</div>`;
+    }).join('')}</div>
+    <p class="muted" id="manual-note" style="margin-top:12px;max-width:760px">${anyLocked ? `Зафиксировано ${Object.keys(locked).length} ${pw(Object.keys(locked).length, ['канал','канала','каналов'])} на ${rub(Math.round(Object.values(locked).reduce((sum, v) => sum + v, 0)))}. Прогноз и таблица выше посчитаны с учётом фиксации.` : 'Пока всё распределено расчётом.'}${capped.map(c => ` <b>${esc(nm(c.id))}</b> больше ${rub(Math.round(c.got))} не принимает: ёмкость канала на выбранной географии исчерпана, лишнее вернулось в общий котёл.`).join('')}</p>`;
+  box.querySelectorAll('input[data-c]').forEach(el => {
+    el.oninput = () => { const v = +el.value; $(`[data-v="${el.dataset.c}"]`).textContent = `${rub(v)} · ${pct(v / (total || 1), 0)}`; };
+    el.onchange = () => {
+      const other = Object.entries(FORM.locked || {}).filter(([id]) => id !== el.dataset.c).reduce((sum, [, v]) => sum + v, 0);
+      const value = Math.min(+el.value, Math.max(0, total - other));  // сумма фиксаций не должна перерасти бюджет
+      FORM.locked = {...(FORM.locked || {}), [el.dataset.c]: value};
+      makePlan();
+    };
+  });
+  box.querySelectorAll('button[data-unlock]').forEach(b => b.onclick = () => {
+    const next = {...(FORM.locked || {})}; delete next[b.dataset.unlock]; FORM.locked = next; makePlan();
+  });
+  const reset = $('#btn-manual-reset'); if (reset) reset.onclick = () => { FORM.locked = {}; makePlan(); };
 }
 
 // Внизу длинного экрана — только следующий шаг после утверждения; вторую кнопку «Утвердить» не дублируем
@@ -656,7 +869,7 @@ function runBrief(p) {
   const K = KPI[p.kpi_name], sc = META.scenarios[FORM.scenario], nDays = p.brief.horizon_days;
   const ev = sc && sc.events.length ? sc.events.map(e => eventLine(e, nDays)).join('; ') : 'без событий — спокойный рынок';
   const n = SHOCKS.length;
-  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
+  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: ${GEO.ids.length ? `${geoSelected().map(id => esc(geoOf(id).title)).join(', ')} ${geoSelected().length > 1 ? 'округа' : 'округ'} (${pct(geoShare(), 0)} аудитории страны), ` : 'вся Россия, '}бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
 }
 
 // ---------- сценарии рынка и свои шоки ----------

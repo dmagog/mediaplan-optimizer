@@ -237,3 +237,80 @@ def test_static_strategy_twin_equals_main(client):
     run = client.post("/api/run", json={"plan_id": plan["plan_id"], "strategy": "static"}).json()
     assert run["frozen"]["actual_kpi"] == run["verdict"]["actual_kpi"]
     assert len(run["frozen"]["hours"]) == len(run["main"]["hours"])
+
+# --------------------------------------------------------------- география и ручная правка
+
+
+def test_version_matches_pyproject(client):
+    """Номер версии в шапке кабинета — тот же, что у пакета: иначе на показе разъедутся."""
+    import tomllib
+    from pathlib import Path
+
+    from app.main import APP_VERSION
+
+    pyproject = tomllib.loads((Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
+    assert client.get("/api/meta").json()["version"] == APP_VERSION == pyproject["project"]["version"]
+
+
+def test_meta_lists_federal_districts_with_sources(client):
+    geo = client.get("/api/meta").json()["geo"]
+    assert len(geo["districts"]) == 8
+    assert abs(sum(d["weight"] for d in geo["districts"]) - 1.0) < 1e-9
+    assert geo["source_url"].startswith("http") and geo["population_as_of"]
+
+
+def test_narrower_geography_shrinks_capacity_and_forecast(client):
+    """Сузили географию — доступной аудитории меньше, значит и результат за те же деньги меньше."""
+    whole = _plan(client, DEMO1)
+    part = _plan(client, {**DEMO1, "regions": ["cfo", "szfo"]})
+    assert part["geo"]["audience_share"] < 0.5
+    assert part["total_kpi"] < whole["total_kpi"]
+    assert part["plan_id"] != whole["plan_id"]  # разная география — разные планы, а не один из кэша
+    assert whole["geo"]["all_russia"] and len(whole["geo"]["split"]) == 8
+
+
+def test_geography_splits_budget_by_population_and_by_hand(client):
+    plan = _plan(client, {**DEMO1, "regions": ["cfo", "szfo"]})
+    by_population = {row["id"]: row["budget_rub"] for row in plan["geo"]["split"]}
+    assert by_population["cfo"] > by_population["szfo"]  # в ЦФО людей больше
+    assert abs(sum(by_population.values()) - plan["total_budget_rub"]) < 1.0
+
+    manual = _plan(client, {**DEMO1, "regions": ["cfo", "szfo"], "region_split": {"cfo": 50, "szfo": 50}})
+    halves = {row["id"]: row["budget_rub"] for row in manual["geo"]["split"]}
+    assert manual["geo"]["manual_split"]
+    assert abs(halves["cfo"] - halves["szfo"]) < 1.0
+
+
+def test_unknown_region_is_russian_422(client):
+    r = client.post("/api/plan", json={**DEMO1, "regions": ["cfo", "mars"]})
+    assert r.status_code == 422
+    assert "mars" in r.json()["detail"] and "округа" in r.json()["detail"]
+
+
+def test_locked_channel_holds_its_budget_and_changes_the_rest(client):
+    """Ручной бегунок: канал зафиксирован, остальной бюджет планировщик раскладывает заново."""
+    base = _plan(client, DEMO1)
+    victim = min(base["allocations"], key=lambda a: a["budget_rub"])
+    want = base["total_budget_rub"] * 0.2
+    fixed = _plan(client, {**DEMO1, "locked": {victim["channel_id"]: want}})
+    got = next(a for a in fixed["allocations"] if a["channel_id"] == victim["channel_id"])
+    assert got["locked"] is True
+    assert got["budget_rub"] > victim["budget_rub"]  # канал получил больше, чем дал расчёт
+    assert min(got["budget_rub"], want) == pytest.approx(got["budget_rub"], rel=0.01)  # либо просили, либо упёрлись в ёмкость
+    assert fixed["total_kpi"] <= base["total_kpi"] * 1.0001  # расчёт не бывает хуже ручной правки
+    assert abs(sum(a["budget_rub"] for a in fixed["allocations"]) - fixed["total_budget_rub"]) < 1.0
+
+
+def test_locked_more_than_budget_is_russian_422(client):
+    r = client.post("/api/plan", json={**DEMO1, "locked": {"social_1": 2_000_000}})
+    assert r.status_code == 422
+    assert "больше бюджета" in r.json()["detail"]
+
+
+def test_run_uses_the_same_world_as_the_plan(client):
+    """Прогон идёт по тому же каталогу, что и план: иначе факт разошёлся бы с планом на ровном месте."""
+    plan = _approved_plan(client, {**DEMO1, "regions": ["cfo"]})
+    r = client.post("/api/run", json={"plan_id": plan["plan_id"], "scenario_id": "stable"})
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert abs(run["verdict"]["final_deviation_kpi"]) < 0.35  # в узкой географии план и факт всё ещё об одном мире

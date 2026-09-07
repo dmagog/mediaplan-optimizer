@@ -17,6 +17,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.geo import audience_share, scale_catalog
 from brain.curves import build_curves  # noqa: E402
 from brain.planner import plan  # noqa: E402
 from contracts import Brief, SeedBundle, ShockEvent, ShockParameter, TargetKpi  # noqa: E402
@@ -96,6 +97,22 @@ def main() -> None:
     report.append(f"Узкий пресет ({', '.join(NARROW_PRESET)}): недостижимо. {d.explanation} Связывает: {d.binding_constraint.value}. Ходы:")
     for s in d.suggestions:
         report.append(f"- {s.description}: {s.expected_kpi:,.0f} кликов при бюджете {s.expected_budget_rub:,.0f} ₽")
+    report.append("")
+
+    # --- Демо 2б: та же задача в одном округе. География живёт в кабинете (app/geo.py):
+    # brain и world про регионы не знают, поэтому она выражается пересчётом ёмкости каталога
+    cfo_share = audience_share(["cfo"])
+    cfo_catalog = scale_catalog(catalog, cfo_share)
+    cfo_curves = build_curves(collect_retro_history(cfo_catalog), cfo_catalog)
+    demo_geo = plan(Brief(budget_rub=400_000, horizon_days=21, channel_ids=cfo_catalog.channel_ids), cfo_catalog, cfo_curves)
+    (RESULTS / "demo_geo_plan.json").write_text(demo_geo.model_dump_json(indent=2), encoding="utf-8")
+    report += ["## Демо 2б. Один округ: Центральный, 400 тыс. ₽, 21 день", ""]
+    report.append(
+        f"Доступная аудитория — {cfo_share:.0%} страны, ёмкость каналов пересчитана на неё. "
+        f"Прогноз: {demo_geo.total_kpi:,.0f} конверсий, CPA {demo_geo.total_budget_rub / max(demo_geo.total_kpi, 1):,.0f} ₽ "
+        f"(на всю Россию при 1,2 млн ₽ — CPA {demo1.total_budget_rub / demo1.total_kpi:,.0f} ₽). "
+        f"Самый загруженный канал выкупает {max(a.capacity_utilization for a in demo_geo.allocations):.0%} доступной аудитории."
+    )
     report.append("")
 
     # --- Демо 3: шок из интерфейса и сравнение с заморозкой

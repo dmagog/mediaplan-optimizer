@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from app import geo
 from brain.curves import ResponseCurve, build_curves
 from brain.planner import plan as build_plan
 from contracts import (
@@ -45,6 +46,7 @@ from world.settings import WorldSettings
 from world.targeting import catalog_for_targeting
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+APP_VERSION = "0.4.0"  # версия кабинета; tests/test_app.py сверяет её с pyproject.toml
 CASE_DEVIATION_THRESHOLD = 0.20  # порог приёмки кейса: отклонение в конце не более 20 %
 MAX_RUNS_IN_MEMORY = 50  # прогон весит около мегабайта; каждое «Перенести» создаёт новый
 MAX_HORIZON_DAYS = 30  # кейс: 14–21 день; мир откалиброван на этот масштаб
@@ -158,9 +160,21 @@ class State:
     plans: dict[str, MediaPlan] = {}
     approved: dict[str, int] = {}  # plan_id → версия утверждения
     runs: dict[str, dict[str, Any]] = {}
+    geo_of_plan: dict[str, dict[str, Any]] = {}  # план → выбранные округа и ручное деление бюджета
 
 
 state = State()
+
+
+def _geo_context(plan_id: str) -> tuple[PublicCatalog, dict[str, ResponseCurve]]:
+    """Мир того же масштаба, в котором считался план: сегмент таргетинга плюс география.
+
+    Иначе факт разошёлся бы с планом на ровном месте: план считался на ёмкости
+    выбранных округов, а прогон шёл бы по всей стране.
+    """
+    media_plan = _plan(plan_id)
+    share = geo.audience_share(state.geo_of_plan.get(plan_id, {}).get("regions"))
+    return _world(media_plan.brief.targeting.model_dump_json(), share)
 
 
 @asynccontextmanager
@@ -171,7 +185,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="MediaPlan Optimizer", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="MediaPlan Optimizer", version=APP_VERSION, lifespan=lifespan)
 
 
 # --------------------------------------------------------- ошибки → JSON
@@ -213,6 +227,8 @@ class BriefRequest(BaseModel):
     max_cpa_rub: float | None = None
     locked: dict[str, float] = Field(default_factory=dict)
     automation_limit_rub: float | None = None
+    regions: list[str] = Field(default_factory=list, description="федеральные округа; пусто — вся Россия")
+    region_split: dict[str, float] = Field(default_factory=dict, description="ручные доли бюджета по округам")
 
 
 class ShockRequest(BaseModel):
@@ -304,6 +320,8 @@ def meta() -> dict[str, Any]:
         "strategy_titles": STRATEGY_TITLES,
         "binding_titles": BINDING_TITLES,
         "shock_parameters": [p.value for p in ShockParameter],
+        "version": APP_VERSION,
+        "geo": geo.catalog_meta(),
         "case_threshold": CASE_DEVIATION_THRESHOLD,
         "max_horizon_days": MAX_HORIZON_DAYS,
     }
@@ -314,6 +332,7 @@ def make_plan(req: BriefRequest) -> dict[str, Any]:
     if req.channel_ids is None and req.preset not in PRESETS:
         raise HTTPException(422, f"неизвестный пресет «{req.preset}»; доступны: {', '.join(PRESETS)}")
     channels = req.channel_ids or PRESETS[req.preset]["channels"]
+    regions = geo.normalize(req.regions)
     unknown = [c for c in channels if c not in state.catalog.channel_ids]
     if unknown:
         raise HTTPException(422, f"каналов нет в каталоге: {', '.join(unknown)}")
@@ -344,9 +363,10 @@ def make_plan(req: BriefRequest) -> dict[str, Any]:
         payload["target_kpi"] = req.target_kpi
         payload["target_value"] = req.target_value
     brief = Brief(**payload)
-    catalog, curves = _target_context(brief.targeting.model_dump_json())
+    catalog, curves = _world(brief.targeting.model_dump_json(), geo.audience_share(regions))
     media_plan = build_plan(brief, catalog, curves)
     state.plans[media_plan.plan_id] = media_plan
+    state.geo_of_plan[media_plan.plan_id] = {"regions": list(regions), "split": dict(req.region_split)}
     return _plan_view(media_plan)
 
 
@@ -384,10 +404,10 @@ def _run(req: RunRequest, decisions: dict[int, str] | None = None) -> dict[str, 
         raise HTTPException(409, "план не утверждён: нажмите «Утвердить план»")
     if req.scenario_id not in SCENARIOS:
         raise HTTPException(422, f"неизвестный сценарий «{req.scenario_id}»")
-    catalog, curves = _context(media_plan)
     injected = [_shock(s, media_plan) for s in req.shocks]
     noise_seed = req.noise_seed if req.noise_seed is not None else 10_000 + req.world_seed
     seeds = SeedBundle(catalog_seed=0, world_seed=req.world_seed, noise_seed=noise_seed)
+    catalog, curves = _geo_context(req.plan_id)
     main = run_campaign(
         media_plan, catalog, curves,
         RunConfig(
@@ -468,8 +488,8 @@ def degradation(req: DegradationRequest) -> dict[str, Any]:
     media_plan = _plan(req.plan_id)
     _check_plan_usable(media_plan)
     _check_shock_target(req.channel_id, req.start_hour, media_plan)
-    catalog, curves = _context(media_plan)
     seeds = SeedBundle(catalog_seed=0, world_seed=req.world_seed, noise_seed=10_000 + req.world_seed)
+    catalog, curves = _geo_context(req.plan_id)
     rows = []
     for mult in req.multipliers:
         if mult <= 0:
@@ -500,7 +520,7 @@ def compare(req: CompareRequest) -> dict[str, Any]:
     if req.scenario_id not in SCENARIOS:
         raise HTTPException(422, f"неизвестный сценарий «{req.scenario_id}»")
     injected = [_shock(s, media_plan) for s in req.shocks]
-    catalog, curves = _context(media_plan)
+    catalog, curves = _geo_context(req.plan_id)
     stats = compare_strategies(media_plan, catalog, curves, scenario_id=req.scenario_id, seeds=req.seeds, injected=injected, hold_plan=req.hold_plan, world_settings=req.world_settings)
     out: dict[str, Any] = {}
     for name, st in stats.items():
@@ -524,8 +544,8 @@ def stress(req: StressRequest) -> dict[str, Any]:
     """Стресс-тест плана до запуска: все сценарии шоков на одном мире, наша стратегия против плана без изменений."""
     media_plan = _plan(req.plan_id)
     _check_plan_usable(media_plan)
-    catalog, curves = _context(media_plan)
     seeds = SeedBundle(catalog_seed=0, world_seed=req.world_seed, noise_seed=10_000 + req.world_seed)
+    catalog, curves = _geo_context(req.plan_id)
     rows = []
     for scenario_id in SCENARIOS:
         adaptive = run_campaign(media_plan, catalog, curves, RunConfig("adaptive", scenario_id, seeds, [], req.auto_apply_above_limit, hold_plan=req.hold_plan))
@@ -550,6 +570,22 @@ def stress(req: StressRequest) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------- helpers
+
+
+@lru_cache(maxsize=32)
+def _world(targeting_json: str, share: float) -> tuple[PublicCatalog, dict[str, ResponseCurve]]:
+    """Каталог и кривые сегмента, суженного до выбранных округов.
+
+    Сегмент (возраст, пол, тип населённого пункта) считает ``world.targeting``;
+    география кабинета — федеральные округа — пересчитывает ёмкость каналов на
+    долю их населения. Кривые пересобираются ретро-пробами того же мира, иначе
+    план считался бы по одной ёмкости, а кампания шла бы по другой.
+    """
+    catalog, curves = _target_context(targeting_json)
+    if share >= 1.0:
+        return catalog, curves
+    scaled = geo.scale_catalog(catalog, share)
+    return scaled, build_curves(collect_retro_history(scaled), scaled)
 
 
 @lru_cache(maxsize=32)
@@ -623,6 +659,8 @@ def _plan_view(media_plan: MediaPlan) -> dict[str, Any]:
             s["why_not"] = f"дольше {MAX_HORIZON_DAYS} дней: за пределами калибровки" if too_long else None
         data["infeasibility"]["binding_title"] = BINDING_TITLES.get(media_plan.infeasibility.binding_constraint.value, media_plan.infeasibility.binding_constraint.value)
     data["is_empty"] = media_plan.is_feasible and (media_plan.total_budget_rub <= 0 or media_plan.total_kpi <= 0)
+    stored = state.geo_of_plan.get(media_plan.plan_id, {})
+    data["geo"] = geo.geo_view(media_plan.total_budget_rub, stored.get("regions"), stored.get("split"))
     return data
 
 

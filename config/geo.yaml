@@ -1,0 +1,78 @@
+# Реестр географии кампании: федеральные округа России.
+#
+# ПРАВИЛО ПРОЕКТА: ни одного числа из головы. Численность населения — из
+# публичной сводки данных Росстата на 1 января 2025 года; она используется как
+# прокси доли онлайн-аудитории округа. Проникновение интернета по округам
+# различается заметно слабее, чем численность населения, поэтому для деления
+# бюджета и пересчёта ёмкости каналов этого приближения достаточно; уточнение
+# по возрастной структуре и проникновению — отдельный запрос к владельцу мира.
+#
+# Крым и Севастополь в карту не включены: в исходных данных Natural Earth они
+# идут с украинскими кодами, и мы не берём на себя решение спорного вопроса.
+# В численности ЮФО они учтены — это данные источника, мы их не правим.
+
+meta:
+  version: "1.0"
+  population_as_of: "2025-01-01"
+  population_as_of_title: "1 января 2025 года"
+  source_url: "https://ru.wikipedia.org/wiki/Федеральные_округа_Российской_Федерации"
+  source_note: "сводная таблица численности населения по округам (данные Росстата)"
+  map_source: "Natural Earth 50m admin-1 (public domain), https://www.naturalearthdata.com/"
+
+districts:
+  cfo:
+    title: "Центральный"
+    center: "Москва"
+    population:
+      value: 40298690
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Центральный_федеральный_округ"
+  szfo:
+    title: "Северо-Западный"
+    center: "Санкт-Петербург"
+    population:
+      value: 13876648
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Северо-Западный_федеральный_округ"
+  yufo:
+    title: "Южный"
+    center: "Ростов-на-Дону"
+    population:
+      value: 16589069
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Южный_федеральный_округ"
+  skfo:
+    title: "Северо-Кавказский"
+    center: "Пятигорск"
+    population:
+      value: 10310935
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Северо-Кавказский_федеральный_округ"
+  pfo:
+    title: "Приволжский"
+    center: "Нижний Новгород"
+    population:
+      value: 28408677
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Приволжский_федеральный_округ"
+  ufo:
+    title: "Уральский"
+    center: "Екатеринбург"
+    population:
+      value: 12282737
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Уральский_федеральный_округ"
+  sfo:
+    title: "Сибирский"
+    center: "Новосибирск"
+    population:
+      value: 16492894
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Сибирский_федеральный_округ"
+  dfo:
+    title: "Дальневосточный"
+    center: "Владивосток"
+    population:
+      value: 7860278
+      status: sourced
+      source_url: "https://ru.wikipedia.org/wiki/Дальневосточный_федеральный_округ"
