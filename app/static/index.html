@@ -544,6 +544,9 @@ async function init() {
   renderTargeting(); renderGeo(); loadMap(); renderRules();
   $('#btn-rules').onclick = () => { $('#rules-modal').showModal(); readRules(); };
   for (const id of ['btn-rules-close', 'btn-rules-ok']) $('#' + id).onclick = () => { if (readRules()) { $('#rules-modal').close(); renderRules(); } };
+  // Escape закрывает окно мимо кнопок: не выпускаем с запрещённой парой порогов
+  $('#rules-modal').addEventListener('cancel', (e) => { if (!readRules()) e.preventDefault(); });
+  $('#rules-modal').addEventListener('close', renderRules);
   for (const id of ['auto_after', 'stop_after']) $('#' + id).oninput = () => readRules();
   for (const id of ['promise', 'hold_plan', 'auto_limit', 'max_cpa']) $('#' + id).addEventListener('change', renderRules);
   STRATEGY_RU = META.strategy_titles || {}; BINDING_RU = META.binding_titles || {};
@@ -584,7 +587,7 @@ const GEO_PRESETS = [
 ];
 function setTargeting(t = {}) {
   for (const a of AXES) TARGET[a.key] = t[a.key] || [];
-  renderTargeting();
+  renderTargeting(); if (META && META.geo) renderGeo();
 }
 function setRegions(ids) {
   const all = geoAll();
@@ -627,13 +630,14 @@ function renderAudience(sel, share) {
   const box = $('#audience-note'), warn = $('#geo-warn'); if (!box) return;
   const seg = segShare(), total = seg * share;
   box.innerHTML = !segNarrow() && !GEO.ids.length ? ''
-    : `Сегмент ${pct(seg, 0)} аудитории${GEO.ids.length ? ` × география ${pct(share, 0)} страны` : ''} — кампания рассчитывается на <b>${pct(total, total < 0.01 ? 1 : 0)}</b> аудитории страны. Сегмент и география считаются независимыми: это допущение модели.${TARGET.geo.length ? ' Тип населённого пункта меняет и цену показа.' : ''}`;
+    : `Сегмент ${pct(seg, 0)} аудитории${GEO.ids.length ? ` × география ${pct(share, 0)} страны` : ''} — кампания рассчитывается на <b>${pct(total, total < 0.01 ? 1 : 0)}</b> аудитории страны. Сегмент и география считаются независимыми: это допущение модели.${segNarrow() ? ' Узкий сегмент ещё и дороже: цена показа в модели растёт по мере сужения.' : ''}`;
   const capitals = sel.flatMap(id => geoOf(id).federal_cities || []);
   const millions = sel.flatMap(id => geoOf(id).million_cities || []);
   const problems = [];
-  if (TARGET.geo.includes('capital') && !capitals.length)
+  const narrowsGeoAxis = TARGET.geo.length > 0 && TARGET.geo.length < Object.keys(META.targeting.geo).length;
+  if (narrowsGeoAxis && TARGET.geo.includes('capital') && !capitals.length)
     problems.push('выбраны «столицы», но в выбранных округах нет городов федерального значения: Москва — в Центральном, Санкт-Петербург — в Северо-Западном');
-  if (TARGET.geo.length === 1 && TARGET.geo[0] === 'large_cities' && !millions.length)
+  if (narrowsGeoAxis && TARGET.geo.length === 1 && TARGET.geo[0] === 'large_cities' && !millions.length)
     problems.push('выбраны «крупные города», но в выбранных округах нет городов-миллионников — расчёт останется, но условие почти пустое');
   warn.hidden = !problems.length;
   warn.textContent = problems.join('; ') + (problems.length ? '.' : '');
@@ -820,7 +824,7 @@ function renderPlan(p) {
   const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
   body.innerHTML = `${applied}${p._reserveNote ? `<div class="verdict note">${p._reserveNote}</div>` : ''}
     <div class="stats" style="margin-top:24px">${tiles.map(stat).join('')}</div>
-    <p class="muted" style="margin-top:8px;max-width:820px">Лимит на один перенос: ${b.automation_limit_rub ? rub(b.automation_limit_rub) + ' — переносы дороже <span class="tech">будут ждать вашего решения</span><span class="simple">решает менеджер</span> на шаге 3' : 'не задан — автоматика решает сама'}. Изменить — в брифе, блок «Обещание и правила ведения».</p>
+    <p class="muted" style="margin-top:8px;max-width:820px">Лимит на один перенос: ${b.automation_limit_rub ? rub(b.automation_limit_rub) + ' — переносы дороже <span class="tech">будут ждать вашего решения</span><span class="simple">решает менеджер</span> на шаге 3' : 'не задан — автоматика решает сама'}. Изменить — в брифе, кнопка «Изменить правила».</p>
     <div id="whatif"></div><div id="stress" class="tech"></div>
     <div id="plan-geo"></div>
     <div class="head-row" style="margin:32px 0 16px"><h4 style="margin:0">Распределение по каналам</h4><div class="actions"><div class="seg" id="metrics-seg"><button type="button" class="btn" id="btn-metrics-brief">Кратко</button><button type="button" class="btn" id="btn-metrics-all">Все метрики</button></div><button class="btn btn-secondary btn-sm" id="btn-calendar"></button><button class="btn btn-secondary btn-sm" id="btn-csv-plan">Скачать CSV</button></div></div>
@@ -998,11 +1002,18 @@ function showRunSection(p) {
   stage('run', 'готово к запуску', '');
 }
 // Что запускаем — человеческими словами, чтобы пустой экран до запуска отвечал на вопрос «что сейчас будет»
+// Сегмент словами из самого плана: форма к этому моменту могла уехать вперёд
+function targetWords(t) {
+  if (!t) return '';
+  return AXES.filter(a => (t[a.key] || []).length).map(a => t[a.key].map(k => a.labels[k] || k).join(', ')).join(' · ');
+}
 function runBrief(p) {
   const K = KPI[p.kpi_name], sc = META.scenarios[FORM.scenario], nDays = p.brief.horizon_days;
+  const planGeo = p.geo || {}, planRegions = planGeo.all_russia === false ? (planGeo.regions || []) : [];
+  const planSeg = targetWords(p.brief.targeting);
   const ev = sc && sc.events.length ? sc.events.map(e => eventLine(e, nDays)).join('; ') : 'без событий — спокойный рынок';
   const n = SHOCKS.length;
-  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: ${GEO.ids.length ? `${geoSelected().map(id => esc(geoOf(id).title)).join(', ')} ${geoSelected().length > 1 ? 'округа' : 'округ'} (${pct(geoShare(), 0)} аудитории страны), ` : 'вся Россия, '}${segNarrow() ? `сегмент ${esc(segWords())}, ` : ''}бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>${RULES.auto_after > 0 || RULES.stop_after > 0 ? `; если решения нет — ${[RULES.auto_after > 0 ? `через ${hoursWord(RULES.auto_after)} система применит перенос сама` : null, RULES.stop_after > 0 ? `через ${hoursWord(RULES.stop_after)} кампания встанет` : null].filter(Boolean).join(', ')}` : ''}.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
+  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: ${planRegions.length ? `${planRegions.map(id => esc(geoOf(id).title)).join(', ')} ${planRegions.length > 1 ? 'округа' : 'округ'} (${pct(planGeo.audience_share || 1, 0)} аудитории страны), ` : 'вся Россия, '}${planSeg ? `сегмент ${esc(planSeg)}, ` : ''}бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>${RULES.auto_after > 0 || RULES.stop_after > 0 ? `; если решения нет — ${[RULES.auto_after > 0 ? `через ${hoursWord(RULES.auto_after)} система применит перенос сама` : null, RULES.stop_after > 0 ? `через ${hoursWord(RULES.stop_after)} кампания встанет` : null].filter(Boolean).join(', ')}` : ''}.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
 }
 
 // ---------- сценарии рынка и свои шоки ----------
@@ -1210,6 +1221,7 @@ function cardText(p, r, H) {
 
 function showHour(H) {
   const r = RUN, m = r.main, z = r.frozen, N = m.hours.length, kpi = r.verdict.kpi_name, K = KPI[kpi];
+  H = Math.max(1, Math.min(H, stopCap(r), N));  // дальше порога молчания кампания не идёт ни одним путём
   PLAYER.h = H; $('#p-slider').value = H;
   const rec = m.hours[H-1];
   $('#p-clock').textContent = hourLabel(H); $('#p-pos').innerHTML = `день ${Math.floor((H-1)/24) + 1} из ${Math.ceil(N/24)}${dayDate(Math.floor((H-1)/24) + 1) ? ' · ' + dayDate(Math.floor((H-1)/24) + 1) : ''}<span class="tech"> · час ${H} / ${N}</span>`;
@@ -1280,12 +1292,12 @@ function applyRules(r, H) {
     stopPlayer();
     if (play) play.disabled = true;
     $('#decision-banner').innerHTML = `<div class="verdict alert"><h6 style="margin-bottom:6px">Кампания встала: решение не приняли за ${hoursWord(RULES.stop_after)}</h6>
-      Перенос из карточки ${hourLabel(r._blocked)} ждёт решения дольше ${hoursWord(RULES.stop_after)}, и деньги всё это время лежат в прежнем канале. Дальше кампания не идёт<span class="tech">: решите карточку ниже</span><span class="simple">, пока решение не примет менеджер</span>. Правило меняется в брифе, блок «Правила ведения кампании».</div>`;
+      Перенос из карточки ${hourLabel(r._blocked)} не решают дольше, чем ${hoursWord(RULES.stop_after)}, и деньги всё это время лежат в прежнем канале. Дальше кампания не идёт<span class="tech">: решите карточку ниже</span><span class="simple">, пока решение не примет менеджер</span>. Правило меняется в брифе, блок «Правила ведения кампании».</div>`;
     r._bannerH = H;
     return;
   }
   if (play) play.disabled = false;
-  if (due.length && !AUTO_BUSY) {
+  if (due.length && !AUTO_BUSY && !DECIDING) {
     AUTO_BUSY = true;
     decideProposal(due[0].hour, 'approve', true);
   }
@@ -1306,9 +1318,19 @@ function stopReasons(r, H) {
 function pendingCards(r, H) {
   return r.main.proposals.filter(p => p.applied_by === 'pending' && !(r.decisions || {})[p.hour] && (H == null || p.hour <= H));
 }
+// Карточка, которую человек уже трогал (откатил своё решение), из правила выпадает:
+// иначе система применит перенос заново через секунду после отката
+function rulePending(r, H) { return pendingCards(r, H).filter(p => !(r._noAuto || {})[p.hour]); }
+// Дальше этого часа кампания не идёт, пока решение не принято: одна проверка на все пути
+// (плеер, «До следующего события», «К концу кампании», бегунок)
+function stopCap(r) {
+  if (RULES.stop_after <= 0) return Infinity;
+  const cards = rulePending(r);
+  return cards.length ? Math.min(...cards.map(p => p.hour + RULES.stop_after)) : Infinity;
+}
 function ruleHours(r) {
   const N = r.main.hours.length, out = [];
-  for (const p of pendingCards(r)) {
+  for (const p of rulePending(r)) {
     if (RULES.auto_after > 0) out.push(p.hour + RULES.auto_after);
     if (RULES.stop_after > 0) out.push(p.hour + RULES.stop_after);
   }
@@ -1324,10 +1346,11 @@ function stops(r) {
 }
 // Правило ожидания на текущем часе: сначала остановка кампании, потом автоматическое решение
 function ruleState(r, H) {
-  const cards = pendingCards(r, H);
-  const stopped = RULES.stop_after > 0 ? cards.filter(p => H - p.hour >= RULES.stop_after) : [];
+  const cards = rulePending(r, H);
+  // сначала автоматическое решение: до остановки система успевает решить сама
   const due = RULES.auto_after > 0 ? cards.filter(p => H - p.hour >= RULES.auto_after) : [];
-  return {stopped, due: due.filter(p => !stopped.includes(p))};
+  const stopped = RULES.stop_after > 0 ? cards.filter(p => H - p.hour >= RULES.stop_after && !due.includes(p)) : [];
+  return {stopped, due};
 }
 function stopKind(r, h) {
   const m = r.main;
@@ -1376,6 +1399,7 @@ function nextEvent() { stopPlayer(); const nxt = stops(RUN).find(h => h > PLAYER
 // Остановились на карточке — показываем её, а не оставляем под сгибом
 function focusStop(h) {
   const r = RUN; if (!r) return;
+  if (r._blocked != null) return;  // баннер остановки уже написан правилом, поверх не пишем
   const needs = !isCustomer() && r.main.proposals.some(p => p.hour === h && p.applied_by === 'pending' && !(r.decisions||{})[p.hour]);
   const why = stopReasons(r, h).filter(x => !/карточка/.test(x));
   const goOn = '<button class="btn btn-secondary btn-sm" style="margin-left:12px" onclick="togglePlay()">Продолжить ▶</button>';
@@ -1435,6 +1459,8 @@ async function decideProposal(hour, decision, byRule = false) {
     const eff = res.effect; RUN = res; RUN._req = run._req;
     // кто применил перенос — помним в кабинете: API знает только «решение человека»
     RUN._auto = {...(run._auto || {})}; if (byRule && decision === 'approve') RUN._auto[hour] = RULES.auto_after; else delete RUN._auto[hour];
+    // откатили — карточка снова ждёт человека, и правило её больше не трогает
+    RUN._noAuto = {...(run._noAuto || {})}; if (decision === 'undo') RUN._noAuto[hour] = true;
     prepareRun(RUN); showHour(H); RUN._bannerH = H;
     const K = KPI[RUN.verdict.kpi_name];
     $('#decision-banner').innerHTML = decision === 'decline'
@@ -1444,7 +1470,7 @@ async function decideProposal(hour, decision, byRule = false) {
       : `<div class="verdict ${eff.kpi_delta >= 0 ? 'ok' : 'alert'}"><h6 style="margin-bottom:6px">Решение принято</h6><b>Перенос (${hourLabel(hour)}) сделан. Что изменилось:</b> ${eff.kpi_delta >= 0 ? '+' : ''}${fmt(eff.kpi_delta)} ${plural(eff.kpi_delta, RUN.verdict.kpi_name)} и ${eff.spend_delta >= 0 ? '+' : ''}${rub(eff.spend_delta)} к итогу кампании; отклонение по ${K.dat} ${pct(eff.deviation_kpi_before)} → ${pct(eff.deviation_kpi_after)}. Тот же рынок и та же случайность — разница только от <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>.</div>`;
     $('#decision-banner').scrollIntoView({behavior: 'smooth', block: 'center'});
   } catch (e) { setRunBusy(false); $('#decision-banner').innerHTML = `<p class="err">Не пересчитали: ${esc(ru(e.message))}</p>` + (String(e.message).includes('не найден') ? '<button class="btn btn-secondary btn-sm" onclick="runCampaign()">Запустить заново</button>' : ''); }
-  finally { DECIDING = false; AUTO_BUSY = false; }
+  finally { DECIDING = false; AUTO_BUSY = false; if (RUN && RUN.main) setTimeout(() => applyRules(RUN, PLAYER.h), 0); }
 }
 
 function standBox(id) {
