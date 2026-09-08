@@ -264,12 +264,12 @@
     <div class="presets"><span class="muted">Быстрый выбор набора:</span><div id="preset-chips"></div></div>
     <div class="tags" id="channel-chips"></div>
   </div>
-  <div class="field" style="margin-top:24px" id="f-target"><label>Кому показываем · <span id="target-count"></span></label>
-    <div id="target-axes"></div>
-  </div>
-  <div class="field" style="margin-top:24px" id="f-geo">
-    <div class="geo">
-      <div>
+  <div class="geo" style="margin-top:24px">
+    <div>
+      <div class="field" id="f-target"><label>Кому показываем · <span id="target-count"></span></label>
+        <div id="target-axes"></div>
+      </div>
+      <div class="field" id="f-geo" style="margin-top:24px">
         <label style="display:block">Где показываем · <span id="geo-count"></span></label>
         <div class="presets"><span class="muted">Быстрый выбор:</span><div id="geo-presets"></div></div>
         <div class="tags" id="geo-chips"></div>
@@ -277,8 +277,8 @@
         <p class="muted" id="audience-note" style="margin-top:8px"></p>
         <p class="err" id="geo-warn" style="margin-top:8px" hidden></p>
       </div>
-      <div class="map" id="geo-map"></div>
     </div>
+    <div class="map" id="geo-map"></div>
   </div>
   <div class="rules-row" id="rules-row">
     <div><h6 style="margin-bottom:4px">Правила ведения кампании</h6><p class="muted" id="rules-summary" style="margin:0"></p></div>
@@ -391,7 +391,7 @@
 <footer class="foot">
   <div class="foot-top">
     <div class="foot-brand"><img class="logo" src="/static/logo.svg" alt="" width="22" height="22">MediaPlan Optimizer<span class="ver" id="foot-version">—</span></div>
-    <p class="foot-lead">Планирование и ведение рекламных кампаний: план по каналам с прогнозом и разбросом, кампания по часам, решения по переносам бюджета. Прототип: каналы абстрактные, рынок — симулятор, цифры не выдаются за статистику площадок.</p>
+    <p class="foot-lead">Планирование и ведение рекламных кампаний: план по каналам с прогнозом и разбросом, кампания по часам, решения по переносам бюджета.</p>
   </div>
   <div class="foot-cols">
     <div><h6>Откуда числа</h6><p>Бенчмарки каналов — из публичных источников со ссылкой у каждого значения (<code>config/benchmarks.yaml</code>). Население округов — сводка данных Росстата, карта — Natural Earth (public domain).</p></div>
