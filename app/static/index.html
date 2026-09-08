@@ -179,6 +179,16 @@
   .table th{text-align:right;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:400;color:var(--color-neutral-700);padding:8px;border-bottom:2px solid var(--color-divider);white-space:nowrap;vertical-align:bottom;line-height:1.2}
   .table td{padding:8px;border-bottom:1px solid var(--color-divider);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;vertical-align:middle}
   .table th:first-child,.table td:first-child{text-align:left}
+  /* правка бюджета в строке: поле и шаг ±10 %; ширина фиксирована, чтобы таблица не прыгала при пересчёте */
+  .table td.edit{padding:4px 8px}
+  .cell-edit{display:flex;align-items:center;justify-content:flex-end;gap:4px}
+  .cell-num{width:96px;height:28px;padding:0 6px;text-align:right;font:inherit;font-variant-numeric:tabular-nums;color:var(--color-text);background:var(--color-bg);border:1px solid var(--color-neutral-400);border-radius:0}
+  .cell-num:focus{outline:2px solid var(--color-accent);outline-offset:-1px;border-color:transparent}
+  .pm{width:26px;height:28px;padding:0;font:inherit;line-height:1;color:var(--color-text);background:var(--color-neutral-200);border:0;border-radius:0;cursor:pointer}
+  .pm:hover{background:var(--color-text);color:var(--color-bg)}
+  .pm:disabled{opacity:.4;cursor:not-allowed}
+  .pinned{font:inherit;font-size:11px;color:var(--color-accent-700);background:transparent;border:0;padding:0 0 0 4px;cursor:pointer}
+  @media print{.cell-edit .pm{display:none}.cell-num{border:0;padding:0;width:auto}}
   .table tbody tr:hover td{background:color-mix(in srgb,var(--color-text) 7%,transparent)}
   .scroll .table tbody tr:hover td:first-child{background:color-mix(in srgb,var(--color-text) 7%,var(--color-bg))}
   .verdict .scroll .table th:first-child,.verdict .scroll .table td:first-child{background:var(--color-surface)}
@@ -911,6 +921,38 @@ function renderPlanGeo(p) {
   paintMap($('#plan-map'), Object.fromEntries(rows.map(r => [r.id, r.share])));
 }
 
+// Сколько можно отдать каналу: бюджет минус то, что уже зафиксировано на других
+function freeFor(channelId, total) {
+  const other = Object.entries(FORM.locked || {}).filter(([id]) => id !== channelId).reduce((sum, [, v]) => sum + v, 0);
+  return Math.max(0, total - other);
+}
+function fixChannel(channelId, value, total) {
+  FORM.locked = {...(FORM.locked || {}), [channelId]: Math.max(0, Math.min(Math.round(value), freeFor(channelId, total)))};
+  makePlan();
+}
+function bindCellEdit(p) {
+  const total = p.total_budget_rub, box = $('#plan-table');
+  box.querySelectorAll('input.cell-num').forEach(el => {
+    const a = p.allocations.find(x => x.channel_id === el.dataset.c);
+    el.onfocus = () => el.select();
+    el.oninput = () => { const digits = String(el.value).replace(/[^\d]/g, ''); el.value = digits ? fmt(+digits) : ''; };
+    el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } if (e.key === 'Escape') { el.value = fmt(a.budget_rub); el.blur(); } };
+    el.onchange = () => {
+      const value = +String(el.value).replace(/[^\d]/g, '');
+      if (!isFinite(value) || Math.abs(value - a.budget_rub) < 1) { el.value = fmt(a.budget_rub); return; }
+      fixChannel(el.dataset.c, value, total);
+    };
+  });
+  box.querySelectorAll('button.pm').forEach(b => b.onclick = () => {
+    const a = p.allocations.find(x => x.channel_id === b.dataset.c);
+    const step = Math.max(1000, Math.round((a.budget_rub || total * 0.05) * 0.1));
+    fixChannel(b.dataset.c, a.budget_rub + step * (+b.dataset.d), total);
+  });
+  box.querySelectorAll('button[data-unfix]').forEach(b => b.onclick = () => {
+    const next = {...(FORM.locked || {})}; delete next[b.dataset.unfix]; FORM.locked = next; makePlan();
+  });
+}
+
 // Ручная правка распределения: бегунок фиксирует бюджет канала, остальное планировщик раскладывает заново
 function renderManual(p) {
   const box = $('#manual-block'); if (!box) return;
@@ -966,22 +1008,31 @@ function renderPlanTable(p) {
   $('#btn-metrics-brief').classList.toggle('on', !all); $('#btn-metrics-all').classList.toggle('on', all);
   $('#btn-calendar').textContent = VIEW.calendar ? 'Скрыть календарь' : 'Календарь по дням';
   const simple = document.body.dataset.level === 'simple', maxShare = Math.max(...p.allocations.map(a => a.budget_rub)) || 1;
-  const nameCell = (a) => `<td><div>${esc(a.display_name)}${a.locked ? ' <span class="muted">фикс.</span>' : ''}</div><div class="bar"><i style="width:${(a.budget_rub / maxShare * 100).toFixed(1)}%"></i></div></td>`;
+  const nameCell = (a) => `<td><div>${esc(a.display_name)}${a.locked ? ` <button type="button" class="pinned" data-unfix="${a.channel_id}" title="снять фиксацию и вернуть канал расчёту">фикс. ✕</button>` : ''}</div><div class="bar"><i style="width:${(a.budget_rub / maxShare * 100).toFixed(1)}%"></i></div></td>`;
+  // Бюджет канала правится прямо в строке: ввод суммы и шаг ±10 %. Это тот же приём, что и бегунки ниже, —
+  // канал фиксируется на сумме, остальное планировщик раскладывает заново. У заказчика ячейка остаётся текстом
+  const stepOf = (a) => Math.max(1000, Math.round((a.budget_rub || p.total_budget_rub * 0.05) * 0.1));
+  const budgetCell = (a) => simple ? `<td>${fmt(a.budget_rub)}</td>` : `<td class="edit"><div class="cell-edit">
+      <button type="button" class="pm" data-c="${a.channel_id}" data-d="-1" title="убрать ${rubShort(stepOf(a))}">−</button>
+      <input class="cell-num" data-c="${a.channel_id}" value="${fmt(a.budget_rub)}" inputmode="numeric" aria-label="Бюджет канала «${esc(a.display_name)}», ₽">
+      <button type="button" class="pm" data-c="${a.channel_id}" data-d="1" title="добавить ${rubShort(stepOf(a))}">+</button>
+    </div></td>`;
   // ключевой столбец четвёртым в обоих режимах — глаз не теряет якорь; «Выкуп» сразу за ним, потому что на него ссылается плитка
   const head = all
     ? `<th>Канал</th><th>Бюджет, ₽</th><th>Доля</th><th class="key">${marginalLabel(p.kpi_name)}</th><th>${h2('Выкуп', 'аудитории')}</th><th>Показы</th><th>Охват</th><th>Клики</th><th>Конверсии</th><th>CTR</th><th>VTR*</th><th>CR</th><th>CPM</th><th>CPC</th><th>CPA</th>`
     : simple ? `<th>Канал</th><th>Бюджет, ₽</th><th>Доля</th><th class="key">${cap(K.nomPl)}</th><th class="key">${K.price}, ₽</th>`
     : `<th>Канал</th><th>Бюджет, ₽</th><th>Доля</th><th class="key">${marginalLabel(p.kpi_name)}</th><th>${h2('Выкуп', 'аудитории')}</th><th>${cap(K.nomPl)}</th><th>${K.price}, ₽</th>`;
   const rows = p.allocations.map(a => all
-    ? `<tr>${nameCell(a)}<td>${fmt(a.budget_rub)}</td><td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(marginalValue(a, p.kpi_name))}</td><td>${pct(a.capacity_utilization,0)}</td><td>${fmt(a.impressions)}</td><td>${fmt(a.unique_reach)}</td><td>${fmt(a.clicks)}</td><td>${fmt(a.conversions)}</td><td>${pct(a.ctr,2)}</td><td>${a.vtr!=null?pct(a.vtr,0)+'*':'—'}</td><td>${pct(a.cvr,2)}</td><td>${fmt(a.cpm_rub)}</td><td>${fmt(a.cpc_rub)}</td><td>${fmt(a.cpa_rub)}</td></tr>`
-    : simple ? `<tr>${nameCell(a)}<td>${fmt(a.budget_rub)}</td><td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(allocKpi(a, p.kpi_name))}</td><td class="key">${fmt(p.kpi_name === 'clicks' ? a.cpc_rub : p.kpi_name === 'reach' ? a.budget_rub / (a.unique_reach || 1) : a.cpa_rub, p.kpi_name === 'reach' ? 2 : 0)}</td></tr>`
-    : `<tr>${nameCell(a)}<td>${fmt(a.budget_rub)}</td><td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(marginalValue(a, p.kpi_name))}</td><td>${pct(a.capacity_utilization,0)}</td><td>${fmt(allocKpi(a, p.kpi_name))}</td><td>${fmt(p.kpi_name === 'clicks' ? a.cpc_rub : p.kpi_name === 'reach' ? a.budget_rub / (a.unique_reach || 1) : a.cpa_rub, p.kpi_name === 'reach' ? 2 : 0)}</td></tr>`).join('');
+    ? `<tr>${nameCell(a)}${budgetCell(a)}<td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(marginalValue(a, p.kpi_name))}</td><td>${pct(a.capacity_utilization,0)}</td><td>${fmt(a.impressions)}</td><td>${fmt(a.unique_reach)}</td><td>${fmt(a.clicks)}</td><td>${fmt(a.conversions)}</td><td>${pct(a.ctr,2)}</td><td>${a.vtr!=null?pct(a.vtr,0)+'*':'—'}</td><td>${pct(a.cvr,2)}</td><td>${fmt(a.cpm_rub)}</td><td>${fmt(a.cpc_rub)}</td><td>${fmt(a.cpa_rub)}</td></tr>`
+    : simple ? `<tr>${nameCell(a)}${budgetCell(a)}<td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(allocKpi(a, p.kpi_name))}</td><td class="key">${fmt(p.kpi_name === 'clicks' ? a.cpc_rub : p.kpi_name === 'reach' ? a.budget_rub / (a.unique_reach || 1) : a.cpa_rub, p.kpi_name === 'reach' ? 2 : 0)}</td></tr>`
+    : `<tr>${nameCell(a)}${budgetCell(a)}<td>${pct(a.budget_rub/p.total_budget_rub)}</td><td class="key">${fmt(marginalValue(a, p.kpi_name))}</td><td>${pct(a.capacity_utilization,0)}</td><td>${fmt(allocKpi(a, p.kpi_name))}</td><td>${fmt(p.kpi_name === 'clicks' ? a.cpc_rub : p.kpi_name === 'reach' ? a.budget_rub / (a.unique_reach || 1) : a.cpa_rub, p.kpi_name === 'reach' ? 2 : 0)}</td></tr>`).join('');
   const perDay = p.total_budget_rub / p.brief.horizon_days;
   $('#plan-note').innerHTML = simple
     ? `Сколько денег идёт в каждый канал и по какой цене получаем результат. Дорогой канал получает деньги, когда дешёвые упёрлись в потолок своей аудитории: следующая конверсия там стоила бы ещё дороже. Расход по дням равномерный: около ${rub(Math.round(perDay / 1000) * 1000)} в день.`
     : `Выделенный столбец сравнивает каналы между собой: канал получает деньги, пока ${K.next} в нём не дороже, чем в остальных. Где цена выше общей — канал остановлен перед изломом кривой из ретро-истории: следующий рубль там дал бы меньше.${all ? ' * VTR — допущение 35&nbsp;% без публичного источника (config/assumptions.yaml); досмотры симулятор не моделирует.' : ''}`;
   $('#btn-calendar').hidden = simple; $('#metrics-seg').hidden = simple;
   $('#plan-table').innerHTML = `<div class="scroll"><table class="table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  bindCellEdit(p);
   const nDays = p.brief.horizon_days, channels = p.allocations.map(a => a.channel_id);
   const cal = {}; for (const c of p.calendar) (cal[c.channel_id] ||= {})[c.day] = c.budget_rub;
   const calBox = $('#plan-calendar'); calBox.hidden = !VIEW.calendar;
