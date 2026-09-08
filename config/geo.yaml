@@ -18,11 +18,18 @@ meta:
   source_url: "https://ru.wikipedia.org/wiki/Федеральные_округа_Российской_Федерации"
   source_note: "сводная таблица численности населения по округам (данные Росстата)"
   map_source: "Natural Earth 50m admin-1 (public domain), https://www.naturalearthdata.com/"
+  cities_source_url: "https://ru.wikipedia.org/wiki/Города-миллионеры_России"
+  cities_note: |
+    Города федерального значения и города-миллионеры по округам на 1 января
+    2025 года. Нужны кабинету не для расчёта, а чтобы поймать несочетаемое
+    условие: «столица» без Центрального и Северо-Западного округов пустая.
 
 districts:
   cfo:
     title: "Центральный"
     center: "Москва"
+    federal_cities: ["Москва"]
+    million_cities: ["Москва", "Воронеж"]
     population:
       value: 40298690
       status: sourced
@@ -30,6 +37,8 @@ districts:
   szfo:
     title: "Северо-Западный"
     center: "Санкт-Петербург"
+    federal_cities: ["Санкт-Петербург"]
+    million_cities: ["Санкт-Петербург"]
     population:
       value: 13876648
       status: sourced
@@ -37,6 +46,8 @@ districts:
   yufo:
     title: "Южный"
     center: "Ростов-на-Дону"
+    federal_cities: []
+    million_cities: ["Краснодар", "Ростов-на-Дону", "Волгоград"]
     population:
       value: 16589069
       status: sourced
@@ -44,6 +55,8 @@ districts:
   skfo:
     title: "Северо-Кавказский"
     center: "Пятигорск"
+    federal_cities: []
+    million_cities: []
     population:
       value: 10310935
       status: sourced
@@ -51,6 +64,8 @@ districts:
   pfo:
     title: "Приволжский"
     center: "Нижний Новгород"
+    federal_cities: []
+    million_cities: ["Казань", "Нижний Новгород", "Уфа", "Самара", "Пермь"]
     population:
       value: 28408677
       status: sourced
@@ -58,6 +73,8 @@ districts:
   ufo:
     title: "Уральский"
     center: "Екатеринбург"
+    federal_cities: []
+    million_cities: ["Екатеринбург", "Челябинск"]
     population:
       value: 12282737
       status: sourced
@@ -65,6 +82,8 @@ districts:
   sfo:
     title: "Сибирский"
     center: "Новосибирск"
+    federal_cities: []
+    million_cities: ["Новосибирск", "Красноярск", "Омск"]
     population:
       value: 16492894
       status: sourced
@@ -72,6 +91,8 @@ districts:
   dfo:
     title: "Дальневосточный"
     center: "Владивосток"
+    federal_cities: []
+    million_cities: []
     population:
       value: 7860278
       status: sourced

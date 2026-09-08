@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -42,6 +43,7 @@ from harness.compare import compare_strategies
 from harness.retro import collect_retro_history
 from harness.runner import RunConfig, run_campaign
 from world import SCENARIOS, build_catalog
+from world.config import CONFIG_DIR
 from world.settings import WorldSettings
 from world.targeting import catalog_for_targeting
 
@@ -322,9 +324,21 @@ def meta() -> dict[str, Any]:
         "shock_parameters": [p.value for p in ShockParameter],
         "version": APP_VERSION,
         "geo": geo.catalog_meta(),
+        "targeting": _targeting_axes(),
         "case_threshold": CASE_DEVIATION_THRESHOLD,
         "max_horizon_days": MAX_HORIZON_DAYS,
     }
+
+
+def _targeting_axes() -> dict[str, Any]:
+    """Оси сегмента и доля аудитории каждой позиции — чтобы кабинет показывал цену выбора.
+
+    Значения берём из того же публичного файла допущений, по которому сегмент
+    считает ``world.targeting``: кабинет не должен знать о мире больше, но и
+    выдумывать свои доли ему нельзя.
+    """
+    cfg = yaml.safe_load((CONFIG_DIR / "world_extensions.yaml").read_text(encoding="utf-8"))["targeting"]
+    return {axis: cfg[axis] for axis in ("age_groups", "genders", "geo")} | {"geo_price": cfg["geo_price"]}
 
 
 @app.post("/api/plan")

@@ -34,6 +34,8 @@ class District:
     center: str
     population: int
     weight: float
+    federal_cities: tuple[str, ...]
+    million_cities: tuple[str, ...]
 
 
 def _load() -> tuple[dict[str, District], dict]:
@@ -47,6 +49,8 @@ def _load() -> tuple[dict[str, District], dict]:
             center=entry["center"],
             population=entry["population"]["value"],
             weight=entry["population"]["value"] / total,
+            federal_cities=tuple(entry.get("federal_cities", [])),
+            million_cities=tuple(entry.get("million_cities", [])),
         )
         for key, entry in entries.items()
     }
@@ -162,6 +166,8 @@ def catalog_meta() -> dict[str, object]:
                 "center": d.center,
                 "population": d.population,
                 "weight": d.weight,
+                "federal_cities": list(d.federal_cities),
+                "million_cities": list(d.million_cities),
             }
             for d in DISTRICTS.values()
         ],
@@ -169,4 +175,5 @@ def catalog_meta() -> dict[str, object]:
         "population_as_of_title": GEO_META["population_as_of_title"],
         "source_url": GEO_META["source_url"],
         "map_source": GEO_META["map_source"],
+        "cities_source_url": GEO_META["cities_source_url"],
     }
