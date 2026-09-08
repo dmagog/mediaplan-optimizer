@@ -314,3 +314,31 @@ def test_run_uses_the_same_world_as_the_plan(client):
     assert r.status_code == 200, r.text
     run = r.json()
     assert abs(run["verdict"]["final_deviation_kpi"]) < 0.35  # в узкой географии план и факт всё ещё об одном мире
+
+def test_meta_exposes_targeting_axes(client):
+    """Кабинету нужны доли осей сегмента: он показывает цену выбора и не выдумывает числа сам."""
+    axes = client.get("/api/meta").json()["targeting"]
+    for axis in ("age_groups", "genders", "geo"):
+        assert abs(sum(axes[axis].values()) - 1.0) < 1e-6, axis
+    assert set(axes["geo"]) == set(axes["geo_price"])
+
+
+def test_targeting_and_geography_narrow_the_plan_together(client):
+    """Сегмент режет аудиторию по людям, география — по стране; вместе — сильнее, чем каждый по себе."""
+    whole = _plan(client, DEMO1)
+    segment = _plan(client, {**DEMO1, "targeting": {"age_groups": ["25_34"], "geo": ["large_cities"]}})
+    both = _plan(client, {**DEMO1, "targeting": {"age_groups": ["25_34"], "geo": ["large_cities"]}, "regions": ["cfo", "szfo"]})
+    assert segment["total_kpi"] < whole["total_kpi"]
+    assert both["total_kpi"] < segment["total_kpi"]
+    assert len({whole["plan_id"], segment["plan_id"], both["plan_id"]}) == 3
+    assert both["geo"]["audience_share"] < 0.5  # география в ответе остаётся про округа, а не про сегмент
+
+
+def test_geography_registry_knows_cities_for_impossible_combinations(client):
+    """«Столицы» без Центрального и Северо-Западного округов — пустое условие, кабинет обязан это видеть."""
+    districts = {d["id"]: d for d in client.get("/api/meta").json()["geo"]["districts"]}
+    assert districts["cfo"]["federal_cities"] == ["Москва"]
+    assert districts["szfo"]["federal_cities"] == ["Санкт-Петербург"]
+    assert all(not districts[d]["federal_cities"] for d in ("yufo", "skfo", "pfo", "ufo", "sfo", "dfo"))
+    assert not districts["dfo"]["million_cities"] and not districts["skfo"]["million_cities"]
+    assert len(sum((d["million_cities"] for d in districts.values()), [])) == 16
