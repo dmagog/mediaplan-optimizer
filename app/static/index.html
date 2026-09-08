@@ -151,7 +151,8 @@
   .step.cur{color:var(--color-text);border-bottom-color:var(--color-accent)}
   .step.done .num{color:var(--color-accent);opacity:1}
   .step:disabled{opacity:1;color:var(--color-neutral-600)} .step:disabled .num{color:var(--color-neutral-600)}
-  .view{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+  .view{display:flex;align-items:center;gap:8px;flex:none}
+  .nav-right{display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-left:auto;flex-wrap:wrap}
   .lvl-label{font-size:12px;color:var(--color-neutral-700)}
   main{max-width:1280px;margin:0 auto;padding:32px 32px 80px}
   section.screen{min-width:0}
@@ -178,6 +179,11 @@
   table.table{width:100%;border-collapse:collapse;font-size:14px}
   .table th{text-align:right;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:400;color:var(--color-neutral-700);padding:8px;border-bottom:2px solid var(--color-divider);white-space:nowrap;vertical-align:bottom;line-height:1.2}
   .table td{padding:8px;border-bottom:1px solid var(--color-divider);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;vertical-align:middle}
+  /* всю свободную ширину забирает название канала: иначе числовые столбцы растягиваются
+     на весь экран и между ними появляется пустота, особенно заметная на подсвеченных */
+  .table th:first-child,.table td:first-child{width:100%;min-width:180px}
+  .table td:first-child .bar{max-width:none}  /* полоса доли тянется во всю ширину столбца и ведёт глаз к числам */
+  .table th:not(:first-child),.table td:not(:first-child){width:1%}
   .table th:first-child,.table td:first-child{text-align:left}
   /* правка бюджета в строке: поле и шаг ±10 %; ширина фиксирована, чтобы таблица не прыгала при пересчёте */
   .table td.edit{padding:4px 8px}
@@ -251,7 +257,10 @@
     <button class="btn step" data-go="run" disabled><span class="num">03</span><span class="lbl">Кампания</span><small class="st">после утверждения</small></button>
     <button class="btn step" data-go="summary" disabled><span class="num">04</span><span class="lbl">Итог</span><small class="st">в конце кампании</small></button>
   </div>
+  <div class="nav-right">
+  <button type="button" class="btn btn-secondary btn-sm" id="btn-rules-nav">Правила ведения</button>
   <div class="view"><span class="lvl-label">Кабинет:</span><div class="seg lvl" title="Заказчик — что обещали, как идёт кампания, что получили; переносы выше лимита решает менеджер. Менеджер — план по каналам, карточки решений, сценарии рынка, стенды на многих прогонах"><button class="btn on" data-level="simple">Заказчик</button><button class="btn" data-level="tech">Менеджер</button></div></div>
+  </div>
 </div>
 <main>
 
@@ -329,7 +338,7 @@
         <p class="muted">«Вернуть неизрасходованное» — держим план и отдаём остаток клиенту; «потратить весь бюджет» — выжимаем максимум результата, остатка не будет.</p>
       </section>
     </div>
-    <div class="modal-foot"><span class="muted" id="rules-foot"></span><button type="button" class="btn btn-primary" id="btn-rules-ok">Готово</button></div>
+    <div class="modal-foot"><span class="muted" id="rules-foot">Правила действуют на прогон и на карточки решений</span><button type="button" class="btn btn-primary" id="btn-rules-ok">Готово</button></div>
   </dialog>
   <div class="hr"></div>
   <div class="actions">
@@ -552,7 +561,8 @@ async function init() {
   $('#app-version').textContent = ver; $('#foot-version').textContent = ver;
   $('#foot-geo-src').innerHTML = `Карта округов: Natural Earth (public domain) · население на ${esc(META.geo.population_as_of_title || META.geo.population_as_of)}: <a href="${esc(META.geo.source_url)}" target="_blank" rel="noopener">сводка данных Росстата</a>`;
   renderTargeting(); renderGeo(); loadMap(); renderRules();
-  $('#btn-rules').onclick = () => { $('#rules-modal').showModal(); readRules(); };
+  const openRules = () => { $('#rules-modal').showModal(); readRules(); planHint(); };
+  $('#btn-rules').onclick = openRules; $('#btn-rules-nav').onclick = openRules;
   for (const id of ['btn-rules-close', 'btn-rules-ok']) $('#' + id).onclick = () => { if (readRules()) { $('#rules-modal').close(); renderRules(); } };
   // Escape закрывает окно мимо кнопок: не выпускаем с запрещённой парой порогов
   $('#rules-modal').addEventListener('cancel', (e) => { if (!readRules()) e.preventDefault(); });
@@ -670,6 +680,14 @@ const waitWords = () => RULES.auto_after > 0 || RULES.stop_after > 0
   ? [RULES.auto_after > 0 ? `сами через ${hoursWord(RULES.auto_after)}` : null, RULES.stop_after > 0 ? `стоп через ${hoursWord(RULES.stop_after)}` : null].filter(Boolean).join(', ')
   : 'ждём человека сколько угодно';
 const hoursWord = (h) => h % 24 === 0 && h >= 24 ? days(h / 24) : `${h} ${pw(h, ['час','часа','часов'])}`;
+// Часть правил — это бриф (лимит, потолок цены, обещание): они попадают в план при расчёте.
+// Пороги ожидания живут в кабинете и действуют сразу. Когда план уже посчитан, говорим об этом
+function planHint() {
+  const foot = $('#rules-foot'); if (!foot) return;
+  foot.textContent = PLAN && !PLAN.infeasibility
+    ? 'Пороги ожидания действуют сразу; обещание, лимит переноса и потолок цены — со следующего расчёта плана'
+    : 'Правила действуют на прогон и на карточки решений';
+}
 function renderRules() {
   const limit = num('auto_limit'), cpa = num('max_cpa'), promise = $('#promise').value, hold = $('#hold_plan').value === 'true';
   $('#rules-summary').innerHTML = [
