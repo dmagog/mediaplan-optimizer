@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="MediaPlan Optimizer">
+  <!-- Тот же знак для тёмной темы: столбцы бумажные, чтобы не пропадать на чёрном фоне.
+       Знак в стиле Modernist: три канала столбцами, красный блок — бюджет, перенесённый в тот,
+       что даёт больше. Три фигуры и разрыв: читается и в шапке (24 px), и в вкладке (16 px). -->
+  <rect x="3" y="30" width="14" height="30" fill="#f3f2f2"/>
+  <rect x="22" y="18" width="14" height="42" fill="#f3f2f2"/>
+  <rect x="41" y="30" width="14" height="30" fill="#f3f2f2"/>
+  <rect x="41" y="4" width="14" height="22" fill="#ec3013"/>
+</svg>
