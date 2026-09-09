@@ -20,3 +20,4 @@
 | [optimizer_plan.md](optimizer_plan.md) · [optimizer_onepager.md](optimizer_onepager.md) | план работ по оптимайзеру и одностраничник к встрече |
 | [world/](world) | контракт мира: интерфейс симулятора и его допущения |
 | [case/](case) | исходное задание кейса |
+| [screencast.mp4](screencast.mp4) | скринкаст на 2,6 минуты: постановки A и B, план, кампания, экран недостижимости |
