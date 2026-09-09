@@ -135,6 +135,10 @@ RU_RULES = {
 }
 
 
+def _num(value: float) -> str:
+    return f"{value:,.0f}".replace(",", "\u00a0")
+
+
 def _rub(value: float) -> str:
     """Рубли с пробелом-разделителем тысяч, как принято в русской типографике."""
     return f"{value:,.0f}".replace(",", " ") + "\u00a0₽"
@@ -356,11 +360,17 @@ def make_plan(req: BriefRequest) -> dict[str, Any]:
     if req.mode == "A":
         if req.budget_rub is None:
             raise HTTPException(422, "бюджет не задан")
+        # своё сообщение до контракта Brief: иначе про отрицательный бюджет человек
+        # прочитает про сумму фиксаций каналов и не поймёт, что от него хотят
+        if req.budget_rub <= 0:
+            raise HTTPException(422, f"бюджет должен быть больше нуля, получено {_rub(req.budget_rub)}")
         locked_sum = sum(req.locked.values())
         if locked_sum > req.budget_rub:
             raise HTTPException(422, f"зафиксировано {_rub(locked_sum)}, это больше бюджета {_rub(req.budget_rub)}")
     elif req.target_value is None:
         raise HTTPException(422, "целевой объём не задан")
+    elif req.target_value <= 0:
+        raise HTTPException(422, f"целевой объём должен быть больше нуля, получено {_num(req.target_value)}")
 
     payload: dict[str, Any] = {
         "objective": req.objective,
@@ -649,6 +659,77 @@ def _remember_run(run_id: str, view: dict[str, Any], req: RunRequest) -> None:
         state.runs.pop(next(iter(state.runs)))
 
 
+def _plan_totals(media_plan: MediaPlan) -> dict[str, Any]:
+    """Сводка по медиаплану целиком: объёмы суммой, качество и цены — от объёмов.
+
+    Требование постановки: те же метрики, что по каналам, но и по плану в целом.
+    Средние берём взвешенными по объёму, а не средним арифметическим долей: иначе
+    маленький канал с высоким CTR перетянул бы общую цифру. VTR считаем только по
+    каналам, где он определён (видеоформаты), и говорим, какая доля показов учтена.
+    Охват складываем: планировщик считает аудитории каналов независимыми, факт
+    кампании дедуплицируется миром — разница описана в README.
+    """
+    a = media_plan.allocations
+    spend = sum(x.budget_rub for x in a)
+    impressions = sum(x.impressions for x in a)
+    clicks = sum(x.clicks for x in a)
+    conversions = sum(x.conversions for x in a)
+    reach = sum(x.unique_reach for x in a)
+    video = [x for x in a if x.vtr is not None]
+    video_impressions = sum(x.impressions for x in video)
+    return {
+        "budget_rub": spend,
+        "impressions": impressions,
+        "unique_reach": reach,
+        "clicks": clicks,
+        "conversions": conversions,
+        "ctr": clicks / impressions if impressions else None,
+        "cvr": conversions / clicks if clicks else None,
+        "vtr": (sum(x.vtr * x.impressions for x in video) / video_impressions) if video_impressions else None,
+        "vtr_impressions_share": video_impressions / impressions if impressions else 0.0,
+        "cpm_rub": spend / impressions * 1000 if impressions else None,
+        "cpc_rub": spend / clicks if clicks else None,
+        "cpa_rub": spend / conversions if conversions else None,
+        "frequency": impressions / reach if reach else None,
+    }
+
+
+def _plan_series(media_plan: MediaPlan) -> dict[str, list[dict[str, float]]]:
+    """Ряды бюджета и накопления KPI по дням и по неделям.
+
+    Часовая траектория остаётся источником правды; здесь из неё берутся точки
+    конца суток и конца недели, чтобы кабинет и любой другой потребитель не
+    выбирали каждый 24-й час руками.
+    """
+    kpi_of = {"clicks": "cum_clicks", "conversions": "cum_conversions", "reach": "cum_reach"}
+    field = kpi_of.get(media_plan.kpi_name, "cum_conversions")
+    by_day: dict[int, float] = {}
+    for cell in media_plan.calendar:
+        by_day[cell.day] = by_day.get(cell.day, 0.0) + cell.budget_rub
+    days: list[dict[str, float]] = []
+    for point in media_plan.trajectory:
+        if point.hour == 0 or point.hour % 24:
+            continue
+        day = point.hour // 24
+        days.append({
+            "day": day,
+            "budget_rub": by_day.get(day, 0.0),
+            "cum_budget_rub": point.cum_spend_rub,
+            "cum_kpi": getattr(point, field),
+        })
+    weeks: list[dict[str, float]] = []
+    for start in range(0, len(days), 7):
+        chunk = days[start:start + 7]
+        weeks.append({
+            "week": start // 7 + 1,
+            "days": [chunk[0]["day"], chunk[-1]["day"]],
+            "budget_rub": sum(d["budget_rub"] for d in chunk),
+            "cum_budget_rub": chunk[-1]["cum_budget_rub"],
+            "cum_kpi": chunk[-1]["cum_kpi"],
+        })
+    return {"days": days, "weeks": weeks}
+
+
 def _plan_view(media_plan: MediaPlan) -> dict[str, Any]:
     data = media_plan.model_dump(mode="json")
     data["trajectory"] = [
@@ -669,6 +750,9 @@ def _plan_view(media_plan: MediaPlan) -> dict[str, Any]:
             s["why_not"] = f"дольше {MAX_HORIZON_DAYS} дней: за пределами калибровки" if too_long else None
         data["infeasibility"]["binding_title"] = BINDING_TITLES.get(media_plan.infeasibility.binding_constraint.value, media_plan.infeasibility.binding_constraint.value)
     data["is_empty"] = media_plan.is_feasible and (media_plan.total_budget_rub <= 0 or media_plan.total_kpi <= 0)
+    if media_plan.is_feasible and media_plan.allocations:
+        data["totals"] = _plan_totals(media_plan)
+        data["series"] = _plan_series(media_plan)
     stored = state.geo_of_plan.get(media_plan.plan_id, {})
     data["geo"] = geo.geo_view(media_plan.total_budget_rub, stored.get("regions"), stored.get("split"))
     return data

@@ -187,6 +187,7 @@
   .table td:first-child .bar{max-width:none}  /* полоса доли тянется во всю ширину столбца и ведёт глаз к числам */
   .table th:not(:first-child),.table td:not(:first-child){width:1%}
   .table th:first-child,.table td:first-child{text-align:left}
+  .table tfoot td{border-top:2px solid var(--color-divider);border-bottom:0;font-weight:600;background:var(--color-bg)}
   /* правка бюджета в строке: поле и шаг ±10 %; ширина фиксирована, чтобы таблица не прыгала при пересчёте */
   .table td.edit{padding:4px 8px}
   .cell-edit{display:flex;align-items:center;justify-content:flex-end;gap:4px}
@@ -463,7 +464,7 @@ const h2 = (a, b) => `<span class="w2">${a}<br>${b}</span>`;
 const stat = (t) => `<div class="stat ${t[3] || ''}"${t[4] ? ` title="${esc(t[4])}"` : ''}><div class="lbl">${t[0]}</div><div class="val">${t[1]}</div><div class="note">${t[2]}</div></div>`;
 let META = null, PLAN = null, RUN = null, CHARTS = {}, PLAYER = {h:0, timer:null, speed:6};
 // Состояние формы, которого нет в инпутах: постановка, набор каналов, выбранный сценарий, свои шоки, вид таблицы плана
-let FORM = {mode: 'A', channel_ids: [], scenario: 'channel_pause', locked: {}}, SHOCKS = [], VIEW = {allMetrics: null, calendar: false};
+let FORM = {mode: 'A', channel_ids: [], scenario: 'channel_pause', locked: {}}, SHOCKS = [], VIEW = {allMetrics: null, calendar: false, periods: 'weeks'};
 let NAME = {}, STRATEGY_RU = {}, BINDING_RU = {};
 const nm = (id) => NAME[id] || id;
 // Строки из бэкенда содержат id каналов, английские имена KPI и запятую в тысячах — переводим на фронте, не трогая brain
@@ -861,6 +862,7 @@ function renderPlan(p) {
     <div class="head-row" style="margin:32px 0 16px"><h4 style="margin:0">Распределение по каналам</h4><div class="actions"><div class="seg" id="metrics-seg"><button type="button" class="btn" id="btn-metrics-brief">Кратко</button><button type="button" class="btn" id="btn-metrics-all">Все метрики</button></div><button class="btn btn-secondary btn-sm" id="btn-calendar"></button><button class="btn btn-secondary btn-sm" id="btn-csv-plan">Скачать CSV</button></div></div>
     <div id="plan-table"></div>
     <div id="plan-calendar" hidden></div>
+    <div id="plan-periods"></div>
     <div class="tech" id="manual-block"></div>
     <p class="muted" id="plan-note" style="margin-top:16px;max-width:640px"></p>
     <div class="hr"></div>
@@ -872,7 +874,7 @@ function renderPlan(p) {
   $('#btn-metrics-brief').onclick = () => { VIEW.allMetrics = false; renderPlanTable(p); };
   $('#btn-metrics-all').onclick = () => { VIEW.allMetrics = true; renderPlanTable(p); };
   $('#btn-calendar').onclick = () => { VIEW.calendar = !VIEW.calendar; renderPlanTable(p); if (VIEW.calendar) $('#plan-calendar').scrollIntoView({behavior: 'smooth', block: 'nearest'}); };
-  renderPlanTable(p); renderPlanGeo(p); renderManual(p); planFoot(p);
+  renderPlanTable(p); renderPeriods(p); renderPlanGeo(p); renderManual(p); planFoot(p);
   try {
     const hours = p.trajectory.map(t => t.hour);
     lineChart('c-plan-kpi', hours, [
@@ -883,6 +885,23 @@ function renderPlan(p) {
     dailySpendChart('c-plan-spend', p);
   } catch (e) { console.error(e); }
   if (p.approved_version) showRunSection(p);
+}
+
+// Динамика бюджета и накопления результата по дням и по неделям.
+// Ряды приходят из ответа плана (`series`), чтобы кабинет не выбирал каждый 24-й час руками
+function renderPeriods(p) {
+  const box = $('#plan-periods'); if (!box || !p.series) return;
+  const K = KPI[p.kpi_name], byWeek = VIEW.periods !== 'days', rows = byWeek ? p.series.weeks : p.series.days;
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const label = (r) => byWeek ? `Неделя ${r.week} · дни ${r.days[0]}–${r.days[1]}` : `День ${r.day}${dayDate(r.day) ? ' · ' + dayDate(r.day) : ''}`;
+  box.innerHTML = `<div class="head-row" style="margin:32px 0 12px"><h4 style="margin:0">Бюджет и результат ${byWeek ? 'по неделям' : 'по дням'}</h4>
+      <div class="seg" id="periods-seg"><button type="button" class="btn ${byWeek ? '' : 'on'}" data-p="days">По дням</button><button type="button" class="btn ${byWeek ? 'on' : ''}" data-p="weeks">По неделям</button></div></div>
+    <div class="scroll"><table class="table"><thead><tr><th>Период</th><th>Бюджет, ₽</th><th>${h2('Бюджет', 'накопит.')}</th><th>${cap(K.nomPl)} накопит.</th><th>${h2('Доля', 'плана')}</th></tr></thead><tbody>${
+      rows.map(r => `<tr><td>${label(r)}</td><td>${fmt(r.budget_rub)}</td><td>${fmt(r.cum_budget_rub)}</td><td>${fmt(r.cum_kpi)}</td><td>${pct(r.cum_kpi / (p.total_kpi || 1), 0)}</td></tr>`).join('')
+    }</tbody></table></div>
+    <p class="muted" style="margin-top:12px;max-width:760px">Бюджет канала разложен по дням равномерно, поэтому недели отличаются только длиной хвоста: в последней неделе остаётся ${rows.length && byWeek ? days(p.series.days.length - (p.series.weeks.length - 1) * 7) : days(p.brief.horizon_days)} из семи. Накопление результата идёт быстрее в начале: дешёвые каналы выкупаются первыми.</p>`;
+  box.querySelectorAll('#periods-seg button').forEach(b => b.onclick = () => { VIEW.periods = b.dataset.p; renderPeriods(p); });
+  fixHeaders(box);
 }
 
 // Карта с заливкой по доле бюджета: самый дорогой округ — самый насыщенный
@@ -1023,8 +1042,14 @@ function planFoot(p) {
 }
 
 // Таблица плана: «Кратко» — шесть столбцов, «Все метрики» — как требует кейс; менеджер видит всё сразу
+// целевой показатель и его цена по кампании целиком — из сводки, которую посчитал сервер
+const allocKpiTotal = (t, kpi) => kpi === 'clicks' ? t.clicks : kpi === 'reach' ? t.unique_reach : t.conversions;
+const priceTotal = (t, kpi) => kpi === 'clicks' ? t.cpc_rub : kpi === 'reach' ? (t.unique_reach ? t.budget_rub / t.unique_reach : null) : t.cpa_rub;
 function renderPlanTable(p) {
-  const K = KPI[p.kpi_name], all = VIEW.allMetrics ?? false;
+  const K = KPI[p.kpi_name];
+  // «Все метрики» — режим кабинета менеджера: у заказчика таблица всегда короткая,
+  // иначе включённый переключатель протекал к нему при смене кабинета
+  const all = document.body.dataset.level !== 'simple' && (VIEW.allMetrics ?? false);
   // подпись кнопки называет текущий режим и действие: «Все метрики → Кратко»
   $('#btn-metrics-brief').classList.toggle('on', !all); $('#btn-metrics-all').classList.toggle('on', all);
   $('#btn-calendar').textContent = VIEW.calendar ? 'Скрыть календарь' : 'Календарь по дням';
@@ -1052,7 +1077,14 @@ function renderPlanTable(p) {
     ? `Сколько денег идёт в каждый канал и по какой цене получаем результат. Дорогой канал получает деньги, когда дешёвые упёрлись в потолок своей аудитории: следующая конверсия там стоила бы ещё дороже. Расход по дням равномерный: около ${rub(Math.round(perDay / 1000) * 1000)} в день.`
     : `Выделенный столбец сравнивает каналы между собой: канал получает деньги, пока ${K.next} в нём не дороже, чем в остальных. Где цена выше общей — канал остановлен перед изломом кривой из ретро-истории: следующий рубль там дал бы меньше.${all ? ' * VTR — допущение 35&nbsp;% без публичного источника (config/assumptions.yaml); досмотры симулятор не моделирует.' : ''}`;
   $('#btn-calendar').hidden = simple; $('#metrics-seg').hidden = simple;
-  $('#plan-table').innerHTML = `<div class="scroll"><table class="table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  // требование постановки: сводные метрики не только по каналам, но и по медиаплану целиком
+  const t = p.totals;
+  const totalRow = !t ? '' : all
+    ? `<tr class="total"><td>Итого по плану</td><td>${fmt(t.budget_rub)}</td><td>100 %</td><td class="key">—</td><td>—</td><td>${fmt(t.impressions)}</td><td>${fmt(t.unique_reach)}</td><td>${fmt(t.clicks)}</td><td>${fmt(t.conversions)}</td><td>${pct(t.ctr, 2)}</td><td>${t.vtr == null ? '—' : pct(t.vtr, 0)}</td><td>${pct(t.cvr, 2)}</td><td>${fmt(t.cpm_rub)}</td><td>${fmt(t.cpc_rub, 2)}</td><td>${fmt(t.cpa_rub)}</td></tr>`
+    : simple
+    ? `<tr class="total"><td>Итого по плану</td><td>${fmt(t.budget_rub)}</td><td>100 %</td><td class="key">${fmt(allocKpiTotal(t, p.kpi_name))}</td><td class="key">${fmt(priceTotal(t, p.kpi_name), priceTotal(t, p.kpi_name) < 10 ? 2 : 0)}</td></tr>`
+    : `<tr class="total"><td>Итого по плану</td><td>${fmt(t.budget_rub)}</td><td>100 %</td><td class="key">—</td><td>—</td><td class="key">${fmt(allocKpiTotal(t, p.kpi_name))}</td><td class="key">${fmt(priceTotal(t, p.kpi_name), priceTotal(t, p.kpi_name) < 10 ? 2 : 0)}</td></tr>`;
+  $('#plan-table').innerHTML = `<div class="scroll"><table class="table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody><tfoot>${totalRow}</tfoot></table></div>`;
   bindCellEdit(p);
   const nDays = p.brief.horizon_days, channels = p.allocations.map(a => a.channel_id);
   const cal = {}; for (const c of p.calendar) (cal[c.channel_id] ||= {})[c.day] = c.budget_rub;

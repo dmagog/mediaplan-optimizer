@@ -342,3 +342,53 @@ def test_geography_registry_knows_cities_for_impossible_combinations(client):
     assert all(not districts[d]["federal_cities"] for d in ("yufo", "skfo", "pfo", "ufo", "sfo", "dfo"))
     assert not districts["dfo"]["million_cities"] and not districts["skfo"]["million_cities"]
     assert len(sum((d["million_cities"] for d in districts.values()), [])) == 16
+
+# ------------------------------------------------- итог по плану и ряды по периодам
+
+
+def test_plan_totals_aggregate_the_whole_media_plan(client):
+    """Постановка требует те же метрики, что по каналам, и по медиаплану целиком."""
+    plan = _plan(client, DEMO1)
+    t = plan["totals"]
+    allocations = plan["allocations"]
+    assert t["budget_rub"] == pytest.approx(plan["total_budget_rub"])
+    for field in ("impressions", "clicks", "conversions", "unique_reach"):
+        assert t[field] == pytest.approx(sum(a[field] for a in allocations))
+    # качество и цены — от объёмов, а не среднее арифметическое долей по каналам
+    assert t["ctr"] == pytest.approx(t["clicks"] / t["impressions"])
+    assert t["cvr"] == pytest.approx(t["conversions"] / t["clicks"])
+    assert t["cpm_rub"] == pytest.approx(t["budget_rub"] / t["impressions"] * 1000)
+    assert t["cpc_rub"] == pytest.approx(t["budget_rub"] / t["clicks"])
+    assert t["cpa_rub"] == pytest.approx(t["budget_rub"] / t["conversions"])
+    naive_ctr = sum(a["ctr"] for a in allocations) / len(allocations)
+    assert t["ctr"] != pytest.approx(naive_ctr)  # взвешивание по объёму, иначе мелкий канал перетянет
+
+
+def test_plan_totals_report_video_share_behind_vtr(client):
+    """VTR есть не у всех каналов, поэтому вместе с ним говорим, какая доля показов учтена."""
+    t = _plan(client, DEMO1)["totals"]
+    assert 0 < t["vtr_impressions_share"] < 1
+    assert 0 < t["vtr"] <= 1
+
+
+def test_plan_series_by_days_and_weeks(client):
+    plan = _plan(client, DEMO1)
+    days, weeks = plan["series"]["days"], plan["series"]["weeks"]
+    assert len(days) == DEMO1["horizon_days"]
+    assert len(weeks) == 3  # 21 день это три полные недели
+    assert [w["days"] for w in weeks] == [[1, 7], [8, 14], [15, 21]]
+    assert sum(d["budget_rub"] for d in days) == pytest.approx(plan["total_budget_rub"], rel=1e-6)
+    assert sum(w["budget_rub"] for w in weeks) == pytest.approx(plan["total_budget_rub"], rel=1e-6)
+    assert days[-1]["cum_kpi"] == pytest.approx(weeks[-1]["cum_kpi"])
+    assert all(a["cum_kpi"] <= b["cum_kpi"] for a, b in zip(days, days[1:], strict=False))  # накопление не убывает
+
+
+def test_zero_and_negative_budget_are_rejected_with_their_own_message(client):
+    """Раньше на отрицательный бюджет отвечала проверка фиксаций каналов, и человек читал не про то."""
+    for budget in (0, -5000):
+        r = client.post("/api/plan", json={**DEMO1, "budget_rub": budget})
+        assert r.status_code == 422
+        assert "бюджет должен быть больше нуля" in r.json()["detail"]
+    r = client.post("/api/plan", json={**DEMO2, "target_value": -10})
+    assert r.status_code == 422
+    assert "целевой объём должен быть больше нуля" in r.json()["detail"]
