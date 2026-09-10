@@ -93,7 +93,7 @@
       "cpa_rub": 575.3423358899611,
       "frequency": 2.53809196209247,
       "capacity_utilization": 0.17598991875634765,
-      "marginal_cost_per_1000_kpi_rub": 1075665.7044258348,
+      "marginal_cost_per_1000_kpi_rub": 1075665.7044258076,
       "expected_daily_clicks_per_rub": [
         0.09370917454240309,
         0.09182333897070208,
@@ -177,7 +177,7 @@
       "cpa_rub": 668.3834140432507,
       "frequency": 2.950169376054187,
       "capacity_utilization": 0.2591226404993548,
-      "marginal_cost_per_1000_kpi_rub": 1070556.9715984366,
+      "marginal_cost_per_1000_kpi_rub": 1070556.9715984096,
       "expected_daily_clicks_per_rub": [
         0.2663216337299795,
         0.2600454652308144,

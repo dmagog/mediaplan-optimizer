@@ -22,5 +22,7 @@ jobs:
         run: ruff check .
       - name: Граница пакетов
         run: lint-imports
+      - name: Числа в документах сходятся с артефактами
+        run: python scripts/sync_doc_numbers.py --check
       - name: Тесты
         run: python -m pytest -q

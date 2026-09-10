@@ -162,10 +162,11 @@ def main() -> None:
     saved = RESULTS / "comparison.json"
     if args.reuse_comparison and saved.exists():
         comparison = json.loads(saved.read_text(encoding="utf-8"))
+        stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(saved.stat().st_mtime))
         report += [
             f"## Стенд: {args.seeds} парных миров, четыре стратегии", "",
-            "Секции стенда взяты из `results/comparison.json` прошлого прогона "
-            "(`--reuse-comparison`): демонстрации выше пересчитаны, кампании — нет.", "",
+            f"Кампании стенда посчитаны прогоном от {stamp} (`results/comparison.json`), "
+            "демонстрации выше — этим запуском (`--reuse-comparison`).", "",
         ]
     else:
         comparison = {}
