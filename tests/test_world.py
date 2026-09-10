@@ -141,3 +141,38 @@ def test_catalog_has_no_hidden_parameters():
     payload = catalog.model_dump_json()
     for forbidden in ("world_seed", "noise_seed", "latent", "fatigue", "price_sigma", "shock"):
         assert forbidden not in payload
+
+
+def test_weekend_is_quieter_than_a_weekday():
+    """Выходные отличаются объёмом, а не только формой пика.
+
+    Множитель выходных раньше сокращался посуточной нормировкой профиля, и все дни
+    выходили одинаковыми по объёму: раскладывать бюджет по дням было нечего.
+    """
+    from world.params import draw_hidden_params
+
+    catalog = build_catalog(0)
+    for seed in (0, 1, 7):
+        hidden = draw_hidden_params(catalog, seed)
+        for cid, params in hidden.items():
+            profile = params.hourly_profile
+            assert abs(profile.sum() - 7.0) < 1e-9, f"{cid}: неделя не нормирована"
+            weekday = profile[: 5 * 24].sum() / 5
+            weekend = profile[5 * 24 :].sum() / 2
+            assert weekend < weekday, f"{cid}, зерно {seed}: выходные не тише будней"
+            assert 0.65 < weekend / weekday < 1.0, f"{cid}, зерно {seed}: {weekend / weekday:.3f} вне диапазона допущения"
+
+
+def test_weekend_ratio_does_not_shift_the_rest_of_the_world():
+    """Множитель выходных розыгрывается отдельным потоком: остальные параметры мира на месте.
+
+    Обычный вызов rng сдвинул бы все следующие розыгрыши, и мир того же зерна стал бы
+    другим — сравнивать прогоны между версиями было бы нечем.
+    """
+    from world.params import draw_hidden_params
+
+    catalog = build_catalog(0)
+    hidden = draw_hidden_params(catalog, 0)
+    # значения зафиксированы на сборке, где множитель выходных ещё не розыгрывался
+    assert abs(hidden["social_1"].daily_requests - 151_672.26758935125) < 1e-6
+    assert abs(hidden["sms"].daily_requests - 9142.857142857143) < 1e-6

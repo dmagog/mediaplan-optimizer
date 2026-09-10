@@ -1,5 +1,6 @@
 """Планировщик: демо 1, демо 2, диагностика, фиксация канала, устойчивость к сетке."""
 
+import re
 import time
 
 import numpy as np
@@ -193,4 +194,66 @@ def test_type_a_says_why_the_budget_is_not_placed(catalog, curves):
     p2 = plan(huge, catalog, curves)
     assert p2.is_feasible and p2.total_budget_rub < 9_000_000
     assert any("ёмкость каналов" in line for line in p2.explanation)
-    assert any("разместился бы за" in line for line in p2.explanation)
+
+    # совет по сроку обязан выполняться: за названный срок бюджет размещается целиком
+    advice = next(line for line in p2.explanation if line.startswith("ёмкости хватило бы за"))
+    days = int(re.search(r"за (\d+)", advice).group(1))
+    longer = plan(huge.model_copy(update={"horizon_days": days}), catalog, curves)
+    assert longer.total_budget_rub >= 9_000_000 - 1.0, advice
+
+
+def test_price_ceiling_move_is_applicable_with_a_locked_channel(catalog, curves):
+    """Ход «поднять потолок» проверяется рабочей сеткой: на грубой он обещал цель, которой не было."""
+    brief = Brief(
+        target_kpi=TargetKpi.CONVERSIONS, target_value=2_000.0, horizon_days=21,
+        channel_ids=catalog.channel_ids, max_cpa_rub=300.0, locked={"social_3": 300_000.0},
+    )
+    p = plan(brief, catalog, curves)
+    assert p.infeasibility is not None
+    assert p.infeasibility.binding_constraint is BindingConstraint.ECONOMICS
+    move = next(s for s in p.infeasibility.suggestions if s.changed_field == "max_cpa_rub")
+    applied = plan(brief.model_copy(update={"max_cpa_rub": move.suggested_value}), catalog, curves)
+    assert applied.is_feasible and applied.total_kpi >= 2_000.0 * 0.99
+
+
+def test_diagnosis_never_suggests_an_empty_target(catalog, curves):
+    """Потолок ниже любого канала: максимум нулевой, и хода «снизить цель до 0» быть не должно."""
+    for cap in (10.0, 100.0):
+        brief = Brief(
+            target_kpi=TargetKpi.CONVERSIONS, target_value=1_500.0, horizon_days=21,
+            channel_ids=catalog.channel_ids, max_cpa_rub=cap,
+        )
+        p = plan(brief, catalog, curves)
+        assert p.infeasibility is not None
+        for s in p.infeasibility.suggestions:
+            assert s.expected_kpi >= 1, s.description
+            assert s.changed_field != "target_value" or s.suggested_value >= 1
+
+
+def test_shortfall_diagnosis_stays_fast(catalog, curves):
+    """Бриф с бюджетом выше ёмкости считается так же быстро, как обычный.
+
+    Потолок ёмкости за N дней считается по профилю напрямую; сборка сеток моделей ради
+    одного числа стоила по четверти секунды на каждый горизонт, а перебору сроков их
+    нужно семь — план отвечал восемь секунд вместо двух десятых.
+    """
+    over = Brief(budget_rub=9_000_000, horizon_days=21, channel_ids=catalog.channel_ids)
+    plan(over, catalog, curves)  # прогрев: первый вызов строит кривые и сетки
+    started = time.perf_counter()
+    p = plan(over, catalog, curves)
+    assert time.perf_counter() - started < 1.5
+    assert any("ёмкость каналов" in line for line in p.explanation)
+
+
+def test_plan_never_costs_more_than_the_brief(catalog, curves):
+    """Последняя порция наливания не перебирает остаток — в том числе при фиксациях.
+
+    Порция считается от размещаемой суммы, поэтому фиксация, не кратная порции,
+    сдвигала остаток и план выходил дороже бюджета брифа на половину порции.
+    """
+    for locked in ({}, {"social_1": 100_777.0}, {"sms": 313_337.0, "social_2": 7_007.0}):
+        brief = Brief(
+            budget_rub=1_200_000, horizon_days=21, channel_ids=catalog.channel_ids, locked=locked,
+        )
+        p = plan(brief, catalog, curves)
+        assert p.total_budget_rub <= 1_200_000 + 1e-6, (locked, p.total_budget_rub)

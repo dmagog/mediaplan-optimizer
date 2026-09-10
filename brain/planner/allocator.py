@@ -31,6 +31,21 @@ class Outcome:
     daily_cum: dict[str, np.ndarray] = field(default_factory=dict)
 
 
+def day_weights(profile: np.ndarray, days: int, day_offset: int = 0) -> np.ndarray:
+    """Вес спроса каждого дня кампании: сумма долей его часов, средние сутки — единица.
+
+    Профиль по часам недели приходит из ретро-наблюдений (brain/curves.py), поэтому
+    разница будней и выходных планировщику видна, а скрытых параметров мира он не знает.
+    Отдельная функция, а не метод: потолок ёмкости за N дней считается по ней напрямую,
+    без сборки сеток моделей.
+    """
+    weights = np.array(
+        [profile[((day_offset + d) * 24 + h) % len(profile)] for d in range(days) for h in range(24)],
+        dtype=float,
+    ).reshape(days, 24).sum(axis=1)
+    return np.where(weights > 0, weights, 1.0)
+
+
 @dataclass
 class ChannelModel:
     """Функция «бюджет на кампанию → результат» одного канала с усталостью по дням.
@@ -49,6 +64,7 @@ class ChannelModel:
     day_offset: int = 0  # с какого дня недели идёт кампания: важно при перепланировании остатка
     grid_budget: np.ndarray = field(default_factory=lambda: np.zeros(1))
     grid: dict[str, np.ndarray] = field(default_factory=dict)
+    grid_step: float = 1.0
     day_weights: np.ndarray = field(default_factory=lambda: np.ones(1))
 
     def __post_init__(self) -> None:
@@ -56,21 +72,12 @@ class ChannelModel:
         # ёмкость дня растёт вместе с его спросом, поэтому потолок кампании — по сумме весов
         max_total = self.curve.max_daily_spend * float(self.day_weights.sum())
         self.grid_budget = np.linspace(0.0, max(max_total, 1.0), self.grid_size)
+        self.grid_step = float(self.grid_budget[1] - self.grid_budget[0])
         rows = [self.simulate(b) for b in self.grid_budget]
         self.grid = {key: np.array([getattr(r, key) for r in rows]) for key in OUTCOME_KEYS}
 
     def _weights(self) -> np.ndarray:
-        """Вес спроса каждого дня кампании: сумма долей его часов, средние сутки — единица.
-
-        Профиль по часам недели приходит из ретро-наблюдений (brain/curves.py), поэтому
-        разница будней и выходных планировщику видна, а скрытых параметров мира он не знает.
-        """
-        profile = self.curve.hourly_profile
-        weights = np.array(
-            [profile[((self.day_offset + d) * 24 + h) % len(profile)] for d in range(self.days) for h in range(24)],
-            dtype=float,
-        ).reshape(self.days, 24).sum(axis=1)
-        return np.where(weights > 0, weights, 1.0)
+        return day_weights(self.curve.hourly_profile, self.days, self.day_offset)
 
     def daily_budgets(self, total_budget: float) -> np.ndarray:
         """Бюджет по дням: пропорционально спросу дня, а не поровну.
@@ -111,7 +118,18 @@ class ChannelModel:
         return Outcome(cum_imps, cum_reach, clicks, conv, spend, cum)
 
     def value(self, total_budget: float, kpi: str) -> float:
-        return float(np.interp(total_budget, self.grid_budget, self.grid[kpi]))
+        """Значение по сетке «бюджет → результат». Сетка равномерная, поэтому берём
+        соседей по индексу: np.interp на скаляре стоил половину времени диагноза
+        (шестьсот тысяч вызовов на один отказ), а результат тот же.
+        """
+        grid = self.grid[kpi]
+        if total_budget <= 0.0:
+            return float(grid[0])
+        x = total_budget / self.grid_step
+        i = int(x)
+        if i >= grid.size - 1:
+            return float(grid[-1])
+        return float(grid[i] + (x - i) * (grid[i + 1] - grid[i]))
 
     def outcome(self, total_budget: float) -> Outcome:
         """Точный пересчёт по дням для итоговой строки плана и траектории."""
@@ -163,10 +181,14 @@ def allocate(
     ``locked`` фиксирует бюджеты каналов (человек двигает канал руками,
     остальные перераспределяются). ``max_cost_per_kpi`` это лимит на среднюю
     цену единицы KPI по всему плану: порции наливаются по возрастанию предельной
-    цены, средняя растёт монотонно, и наливание останавливается на порции, после
-    которой средняя превысила бы лимит (жадный алгоритм при вогнутых кривых даёт
-    максимум KPI при ограничении на среднюю цену). ``reach_model`` включает
-    совместный прирост охвата с вычетом пересечений (ML-надстройка).
+    цены, и наливание останавливается там, где средняя перевалила бы за лимит
+    (жадный алгоритм при вогнутых кривых даёт максимум KPI при ограничении на
+    среднюю цену). Без фиксаций средняя растёт монотонно, и правило сводится к
+    «первая порция сверх лимита — стоп». С фиксацией дорогого канала средняя
+    стартует выше лимита и падает по мере наливания дешёвых порций, поэтому
+    порция принимается ещё и тогда, когда она среднюю снижает: иначе наливание
+    рвётся на первом же шаге и план остаётся из одной фиксации.
+    ``reach_model`` включает совместный прирост охвата с вычетом пересечений.
     """
     locked = dict(locked or {})
     budgets = {cid: 0.0 for cid in models}
@@ -190,41 +212,50 @@ def allocate(
     )
 
     while free_budget >= eps * 0.5:
+        # последняя порция не больше остатка: иначе план стоит дороже бюджета брифа
+        # на половину порции, а при фиксации, не кратной порции, — заметно дороже
+        step = min(eps, free_budget)
         best_cid, best_gain = None, 0.0
         current_reach = joint_reach.incremental(reach_values, prior_reach) if joint_reach else 0
         for cid, model in models.items():
             if cid in frozen:
                 continue
             b = budgets[cid]
-            if b + eps > model.max_budget:
+            if b + step > model.max_budget:
                 frozen[cid] = "ёмкость исчерпана"
                 continue
-            gain = model.value(b + eps, kpi) - model.value(b, kpi)
+            gain = model.value(b + step, kpi) - model.value(b, kpi)
             if joint_reach:
                 # при цели «охват» прирост считается совместно: ML-модель вычитает пересечение
                 # аудиторий каналов, поэтому вклад порции зависит от того, что уже куплено
-                candidate = {**reach_values, cid: model.value(b + eps, "reach")}
+                candidate = {**reach_values, cid: model.value(b + step, "reach")}
                 gain = joint_reach.incremental(candidate, prior_reach) - current_reach
             if gain > best_gain:
                 best_cid, best_gain = cid, gain
         if best_cid is None:
             break
-        if max_cost_per_kpi is not None and (spent + eps) / max(total_kpi + best_gain, 1e-9) > max_cost_per_kpi:
-            for cid in models:
-                frozen.setdefault(cid, f"средняя цена за единицу KPI достигла лимита {max_cost_per_kpi:,.0f} ₽")
-            break
-        spent += eps
+        if max_cost_per_kpi is not None:
+            new_average = (spent + step) / max(total_kpi + best_gain, 1e-9)
+            # пока ничего не налито, «текущей средней» нет: первая же порция сверх лимита
+            # обязана остановить наливание, иначе потолок вообще ничего не ограничивает
+            current_average = spent / total_kpi if total_kpi > 0 and spent > 0 else 0.0
+            # порция проходит, если средняя остаётся под лимитом или хотя бы снижается к нему
+            if new_average > max_cost_per_kpi and new_average >= current_average:
+                for cid in models:
+                    frozen.setdefault(cid, f"средняя цена за единицу KPI достигла лимита {max_cost_per_kpi:,.0f} ₽")
+                break
+        spent += step
         total_kpi += best_gain
         if best_cid not in order:
             order.append(best_cid)
             explanation.append(
                 f"шаг {len(order)}: {best_cid} получает бюджет, первая порция по "
-                f"{eps / best_gain:,.0f} ₽ за единицу KPI (цена последней порции в таблице плана)"
+                f"{step / best_gain:,.0f} ₽ за единицу KPI (цена последней порции в таблице плана)"
             )
-        budgets[best_cid] += eps
+        budgets[best_cid] += step
         if joint_reach:
             reach_values[best_cid] = models[best_cid].value(budgets[best_cid], "reach")
-        free_budget -= eps
+        free_budget -= step
 
     for cid, reason in frozen.items():
         if cid not in locked:

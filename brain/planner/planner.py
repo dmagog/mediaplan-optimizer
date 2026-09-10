@@ -9,15 +9,16 @@
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from brain.assumptions import campaign_audience_multiplier, fatigue_delta, video_vtr
 from brain.config import (
+    ALLOCATION_STEPS,
     BUDGET_BISECTION_ITERATIONS,
-    CAP_SEARCH_GROWTH,
-    CAP_SEARCH_STEPS,
+    CAP_BISECTION_ITERATIONS,
     CORRIDOR_SIGMA_DIVISOR,
     MAX_HORIZON_DAYS,
     REACHABLE_TARGET_MARGIN,
@@ -25,8 +26,14 @@ from brain.config import (
 )
 from brain.curves import ResponseCurve
 from brain.ml import MLBundle, ReachModel
-from brain.planner.allocator import AllocationResult, ChannelModel, allocate, build_models
-from brain.texts import days_word, kpi_label, kpi_unit, num, rub
+from brain.planner.allocator import (
+    AllocationResult,
+    ChannelModel,
+    allocate,
+    build_models,
+    day_weights,
+)
+from brain.texts import days_word, days_word_gen, kpi_label, kpi_unit, kpi_word, num, price, rub
 from contracts import (
     BindingConstraint,
     Brief,
@@ -102,11 +109,26 @@ def plan(brief: Brief, catalog: PublicCatalog, curves: dict[str, ResponseCurve],
 # ----------------------------------------------------------------- тип B
 
 
-def _total_kpi(models: dict[str, ChannelModel], budget: float, kpi: str, locked, max_cpa, reach_model=None) -> float:
-    result = allocate(models, budget, kpi, locked, max_cpa, steps=TYPE_B_BISECTION_STEPS, reach_model=reach_model)
+def _kpi_of(models: dict[str, ChannelModel], budgets: dict[str, float], kpi: str, reach_model=None) -> float:
+    """Итог плана по KPI: при цели «охват» и включённой ML-модели — с вычетом пересечений."""
     if kpi == "reach" and reach_model is not None:
-        return reach_model.predict({cid: models[cid].value(b, kpi) for cid, b in result.budgets.items()})
-    return sum(models[cid].value(b, kpi) for cid, b in result.budgets.items())
+        return reach_model.predict({cid: models[cid].value(b, kpi) for cid, b in budgets.items()})
+    return sum(models[cid].value(b, kpi) for cid, b in budgets.items())
+
+
+def _total_kpi(
+    models: dict[str, ChannelModel], budget: float, kpi: str, locked, max_cpa, reach_model=None,
+    steps: int = TYPE_B_BISECTION_STEPS,
+) -> float:
+    """Сколько KPI даёт бюджет. ``steps`` — размер порции наливания.
+
+    Поиск (бисекция по бюджету, перебор сроков) идёт грубой сеткой ради скорости, а
+    числа, которые попадают человеку в глаза или в бриф, считаются той же сеткой, что
+    и сам план: правило остановки по средней цене зависит от размера порции, и грубая
+    порция при узком потолке рвала наливание до старта — максимум выходил нулевым.
+    """
+    result = allocate(models, budget, kpi, locked, max_cpa, steps=steps, reach_model=reach_model)
+    return _kpi_of(models, result.budgets, kpi, reach_model)
 
 
 def _max_budget(models: dict[str, ChannelModel]) -> float:
@@ -124,27 +146,71 @@ def _min_budget_for(models, target: float, kpi: str, locked, max_cpa, reach_mode
     return hi
 
 
-def _cap_that_reaches(models, brief: Brief, target: float, kpi: str, reach_model) -> tuple[float, float] | None:
-    """Потолок средней цены, при котором цель снова достижима, и бюджет такого плана.
+def _budget_for(models, target: float, kpi: str, locked, max_cpa, reach_model=None) -> float:
+    """Сколько денег план под цель действительно разместит.
 
-    Наливание идёт по предельной отдаче и останавливается, когда средняя цена
-    порции перевалила за потолок, поэтому расчётная цена плана под цель — нижняя
-    граница искомого потолка. Фиксации каналов в брифе наливаются первыми и
-    среднюю цену сдвигают, так что найденное значение проверяем и подращиваем.
+    Бисекция даёт бюджет, который надо *дать*, а при связывающем потолке цены
+    наливание останавливается раньше и тратит заметно меньше: карточка хода обещала
+    3,5 млн там, где план потратит 23 тысячи. Человеку показываем второе.
     """
-    budget = _min_budget_for(models, target, kpi, brief.locked, None, reach_model)
-    cap = budget / target
-    for _ in range(CAP_SEARCH_STEPS):
-        if _total_kpi(models, _max_budget(models), kpi, brief.locked, cap, reach_model) >= target:
-            return cap, _min_budget_for(models, target, kpi, brief.locked, cap, reach_model)
-        cap *= CAP_SEARCH_GROWTH
+    budget = _min_budget_for(models, target, kpi, locked, max_cpa, reach_model)
+    result = allocate(
+        models, budget, kpi, locked, max_cpa, steps=ALLOCATION_STEPS, reach_model=reach_model
+    )
+    return sum(result.budgets.values())
+
+
+def _cap_that_reaches(models, brief: Brief, target: float, kpi: str, reach_model) -> float | None:
+    """Наименьший потолок средней цены, при котором цель снова достижима.
+
+    Нижняя граница — цена плана под цель без потолка; верхняя — вся ёмкость,
+    поделённая на цель: если цель достижима в пределах ёмкости, средняя цена такого
+    плана заведомо ниже этого числа, поэтому отрезок гарантированно содержит ответ.
+    Бисекция идёт грубой сеткой, а найденное значение проверяется рабочей: правило
+    остановки по средней цене зависит от размера порции, и на фиксациях грубая
+    проверка обещала потолок, при котором план потом недобирал цель в разы.
+    """
+    def reaches(cap: float, steps: int) -> bool:
+        return _total_kpi(models, _max_budget(models), kpi, brief.locked, cap, reach_model, steps=steps) >= target
+
+    lo = _min_budget_for(models, target, kpi, brief.locked, None, reach_model) / target
+    hi = _max_budget(models) / target
+    if not reaches(hi, ALLOCATION_STEPS):
+        return None
+    lo = min(lo, hi)
+    for _ in range(CAP_BISECTION_ITERATIONS):
+        mid = (lo + hi) / 2
+        if reaches(mid, TYPE_B_BISECTION_STEPS):
+            hi = mid
+        else:
+            lo = mid
+    # рабочая сетка строже грубой, поэтому от найденной границы поднимаемся, пока цель не пройдёт
+    cap, ceiling = _kopecks_up(hi), _kopecks_up(_max_budget(models) / target)
+    for _ in range(CAP_BISECTION_ITERATIONS):
+        if reaches(cap, ALLOCATION_STEPS):
+            return cap
+        if cap >= ceiling:
+            return None
+        cap = _kopecks_up(min((cap + ceiling) / 2, ceiling))
     return None
 
 
-def _lower_target_suggestion(models, brief: Brief, max_kpi: float, kpi: str, reach_model) -> BriefSuggestion:
-    """Ход «снизить цель»: 95 % достижимого максимума, чтобы цель не висела на потолке."""
+def _kopecks_up(value: float) -> float:
+    """Округление цены вверх до копейки: округление вниз давало потолок, при котором цель не проходит."""
+    return math.ceil(value * 100) / 100
+
+
+def _lower_target_suggestion(models, brief: Brief, max_kpi: float, kpi: str, reach_model) -> BriefSuggestion | None:
+    """Ход «снизить цель»: 95 % достижимого максимума, чтобы цель не висела на потолке.
+
+    Если достижимого максимума нет (узкий потолок цены не пропускает ни один канал),
+    хода нет: бриф с нулевой целью не проходит валидацию, а карточка «снизить цель до
+    0» выходила первой и рекомендованной.
+    """
     reachable = max_kpi * REACHABLE_TARGET_MARGIN
-    budget = _min_budget_for(models, reachable, kpi, brief.locked, brief.max_cpa_rub, reach_model)
+    if round(reachable) < 1:
+        return None
+    budget = _budget_for(models, reachable, kpi, brief.locked, brief.max_cpa_rub, reach_model)
     return BriefSuggestion(
         description=f"Снизить цель до {num(reachable)} {kpi_label(kpi)} при тех же каналах и сроке",
         changed_field="target_value",
@@ -157,7 +223,11 @@ def _lower_target_suggestion(models, brief: Brief, max_kpi: float, kpi: str, rea
 def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models, kpi: str) -> Infeasibility | None:
     target = brief.target_value
     assert target is not None
-    max_kpi = _total_kpi(models, _max_budget(models), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+    # максимум считаем рабочей сеткой: это число человек видит на экране и от него
+    # берётся ход «снизить цель», а грубая порция при узком потолке давала ноль
+    max_kpi = _total_kpi(
+        models, _max_budget(models), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model, steps=ALLOCATION_STEPS
+    )
     if max_kpi >= target:
         return None
 
@@ -165,31 +235,54 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
     # 0. потолок средней цены: если без него цель достижима, связывает именно он.
     # Ёмкость и срок тут ни при чём, и предлагать надо поднять потолок, а не двигать бриф.
     if brief.max_cpa_rub is not None:
-        free_max = _total_kpi(models, _max_budget(models), kpi, brief.locked, None, ctx.reach_model)
+        free_max = _total_kpi(
+            models, _max_budget(models), kpi, brief.locked, None, ctx.reach_model, steps=ALLOCATION_STEPS
+        )
         if free_max >= target:
-            found = _cap_that_reaches(models, brief, target, kpi, ctx.reach_model)
-            if found is not None:
-                cap, budget = found
+            # без потолка цель достижима — значит связывает он, и другого ответа тут быть не может:
+            # прежняя версия при неудачном подборе проваливалась в ветки срока и ёмкости, где
+            # максимум посчитан С потолком, и текст обещал то, чего нет
+            cap = _cap_that_reaches(models, brief, target, kpi, ctx.reach_model)
+            if cap is not None and cap <= brief.max_cpa_rub:
+                cap = _kopecks_up(brief.max_cpa_rub + 0.01)
+            if cap is not None:
                 suggestions.append(
                     BriefSuggestion(
-                        description=f"Поднять потолок средней цены до {rub(cap)} за {kpi_unit(kpi)}",
+                        description=f"Поднять потолок средней цены до {price(cap)} за {kpi_unit(kpi)}",
                         changed_field="max_cpa_rub",
-                        suggested_value=float(round(cap)),
+                        suggested_value=float(cap),
                         expected_kpi=float(target),
-                        expected_budget_rub=float(budget),
+                        expected_budget_rub=float(
+                            _budget_for(models, target, kpi, brief.locked, cap, ctx.reach_model)
+                        ),
                     )
                 )
-                suggestions.append(_lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model))
-                return Infeasibility(
-                    binding_constraint=BindingConstraint.ECONOMICS,
-                    explanation=(
-                        f"Ёмкости каналов хватает, но потолок средней цены {rub(brief.max_cpa_rub)} "
-                        f"пропускает только {num(max_kpi)} {kpi_label(kpi)}; без потолка достижимо "
-                        f"{num(free_max)}, цель {num(target)} — при потолке от {rub(cap)}."
-                    ),
-                    max_achievable=max_kpi,
-                    suggestions=suggestions,
+            else:
+                suggestions.append(
+                    BriefSuggestion(
+                        description="Убрать потолок средней цены",
+                        changed_field="max_cpa_rub",
+                        suggested_value=None,
+                        expected_kpi=float(target),
+                        expected_budget_rub=float(
+                            _budget_for(models, target, kpi, brief.locked, None, ctx.reach_model)
+                        ),
+                    )
                 )
+            lower = _lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model)
+            if lower is not None:
+                suggestions.append(lower)
+            reachable_at = f" — при потолке от {price(cap)}" if cap is not None else " только без потолка"
+            return Infeasibility(
+                binding_constraint=BindingConstraint.ECONOMICS,
+                explanation=(
+                    f"Ёмкости каналов хватает, но потолок средней цены {price(brief.max_cpa_rub)} "
+                    f"пропускает не больше {num(max_kpi)} {kpi_label(kpi)}; без потолка достижимо "
+                    f"{num(free_max)}, цель {num(target)} достижима{reachable_at}."
+                ),
+                max_achievable=max_kpi,
+                suggestions=suggestions,
+            )
     # 1. увеличить срок: минимальный горизонт, при котором цель достижима.
     # Ищем двоичным поиском, а не перебором день за днём: максимум достижимого растёт
     # с горизонтом (ёмкость каналов складывается по дням), поэтому достаточно проверить
@@ -217,10 +310,10 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
                 low = mid + 1
         min_days = low
         m = models_for(min_days)
-        budget = _min_budget_for(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+        budget = _budget_for(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
         suggestions.append(
             BriefSuggestion(
-                description=f"Увеличить срок до {min_days} {days_word(min_days)}",
+                description=f"Увеличить срок до {min_days} {days_word_gen(min_days)}",
                 changed_field="horizon_days",
                 suggested_value=min_days,
                 expected_kpi=float(target),
@@ -228,7 +321,9 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
             )
         )
     # 2. снизить цель до достижимого максимума с запасом 5 %
-    suggestions.append(_lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model))
+    lower = _lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model)
+    if lower is not None:
+        suggestions.append(lower)
     # 3. добавить каналы, которых нет в пресете
     extra = [cid for cid in catalog.channel_ids if cid not in brief.channel_ids and cid in ctx.curves]
     if extra:
@@ -236,7 +331,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         wide_models = wide.models()
         wide_max = _total_kpi(wide_models, _max_budget(wide_models), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
         if wide_max >= target:
-            budget = _min_budget_for(wide_models, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+            budget = _budget_for(wide_models, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
             suggestions.append(
                 BriefSuggestion(
                     description=f"Добавить каналы: {', '.join(extra)}",
@@ -272,8 +367,21 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
     )
 
 
+def _capacity_ceiling(ctx: PlanningContext, days: int) -> float:
+    """Сколько денег каналы способны выкупить за ``days`` дней.
+
+    Потолок канала за кампанию — дневной потолок, умноженный на сумму весов дней,
+    поэтому число считается прямо по профилю, без сборки сеток моделей: сборка
+    стоит четверть секунды на каждый горизонт, а перебору сроков их нужно семь.
+    """
+    return sum(
+        ctx.curves[cid].max_daily_spend * float(day_weights(ctx.curves[cid].hourly_profile, days).sum())
+        for cid in ctx.channel_ids
+    )
+
+
 def _shortfall_notes(brief: Brief, ctx: PlanningContext, models, result: AllocationResult, kpi: str) -> list[str]:
-    """Почему бюджет размещён не весь: потолок цены или ёмкость каналов, и что делать.
+    """Почему бюджет размещён не весь: потолок цены, ёмкость каналов или и то, и другое.
 
     Тип A не проходит через диагноз недостижимости — бриф с бюджетом всегда даёт
     план, — поэтому раньше человек видел только строку «упёрлись в потолок или в
@@ -283,38 +391,44 @@ def _shortfall_notes(brief: Brief, ctx: PlanningContext, models, result: Allocat
     assert brief.budget_rub is not None
     placed = sum(result.budgets.values())
     notes = [f"размещено {rub(placed)} из {rub(brief.budget_rub)}"]
+    # последняя порция каждого канала осесть не успевает, поэтому «весь бюджет» — с запасом
+    slack = brief.budget_rub / ALLOCATION_STEPS * len(ctx.channel_ids)
 
+    capacity_binds = brief.budget_rub > _max_budget(models) + slack
     if brief.max_cpa_rub is not None:
+        # то же наливание и та же сетка, что у самого плана: на грубой сетке разница
+        # порций перекрывала вклад потолка, и связывающий потолок пропадал из текста
         free = allocate(
             models, brief.budget_rub, kpi, brief.locked, None,
-            steps=TYPE_B_BISECTION_STEPS, reach_model=ctx.reach_model,
+            steps=ALLOCATION_STEPS, reach_model=ctx.reach_model,
         )
         free_placed = sum(free.budgets.values())
         if free_placed > placed + 1.0:
-            free_kpi = sum(models[cid].value(b, kpi) for cid, b in free.budgets.items())
+            free_kpi = _kpi_of(models, free.budgets, kpi, ctx.reach_model)
             notes.append(
-                f"потолок средней цены {rub(brief.max_cpa_rub)} за {kpi_unit(kpi)} не пропустил "
+                f"потолок средней цены {price(brief.max_cpa_rub)} за {kpi_unit(kpi)} не пропустил "
                 f"{rub(free_placed - placed)}: без него разместилось бы {rub(free_placed)} "
-                f"и прогноз вырос бы до {num(free_kpi)} {kpi_label(kpi)}"
+                f"и прогноз вырос бы до {num(free_kpi)} {kpi_word(free_kpi, kpi)}"
             )
             if placed <= 0:
                 notes.append("ни один канал не проходит потолок: поднимите его или снимите")
-            return notes
+            if not capacity_binds:
+                return notes
 
     ceiling = _max_budget(models)
     notes.append(
-        f"ёмкость каналов за {brief.horizon_days} {days_word(brief.horizon_days)} принимает не больше {rub(ceiling)}: "
-        "деньги сверх этого мир просто не выкупит"
+        f"ёмкость каналов за {brief.horizon_days} {days_word(brief.horizon_days)} принимает не больше "
+        f"{rub(ceiling)}: деньги сверх этого мир просто не выкупит"
     )
     low, high = brief.horizon_days + 1, MAX_HORIZON_DAYS
-    if low <= high and _max_budget(ctx.models(high)) >= brief.budget_rub:
+    if low <= high and _capacity_ceiling(ctx, high) >= brief.budget_rub + slack:
         while low < high:
             mid = (low + high) // 2
-            if _max_budget(ctx.models(mid)) >= brief.budget_rub:
+            if _capacity_ceiling(ctx, mid) >= brief.budget_rub + slack:
                 high = mid
             else:
                 low = mid + 1
-        notes.append(f"весь бюджет разместился бы за {low} {days_word(low)} или на более широком наборе каналов")
+        notes.append(f"ёмкости хватило бы за {low} {days_word(low)} или на более широком наборе каналов")
     else:
         notes.append("даже за максимальный срок брифа этот набор каналов столько не выкупит: нужны ещё каналы")
     return notes
