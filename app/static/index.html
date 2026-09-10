@@ -354,7 +354,7 @@
     <button class="btn btn-secondary btn-sm" id="btn-demo2">цель, которой не достичь</button>
     <button class="btn btn-secondary btn-sm" id="btn-demo3">один округ: 400 тыс.&nbsp;₽ на Центральный</button>
   </div>
-  <p class="muted" id="brief-note" style="margin-top:16px;max-width:640px"><span class="tech">Первый пример: максимум конверсий на всех восьми каналах по всей стране. Второй: цель на узком наборе недостижима — сервис откажет и предложит три варианта с посчитанным бюджетом. Третий: та же задача в одном округе — ёмкость каналов пересчитана на его аудиторию, бюджет соразмерен.</span></p>
+  <p class="muted" id="brief-note" style="margin-top:16px;max-width:640px"><span class="tech">Первый пример: максимум конверсий на всех восьми каналах по всей стране. Второй: цель на узком наборе недостижима — сервис откажет и предложит готовые ходы с посчитанным бюджетом. Третий: та же задача в одном округе — ёмкость каналов пересчитана на его аудиторию, бюджет соразмерен.</span></p>
 </section>
 
 <!-- 02 · Медиаплан -->
@@ -812,7 +812,11 @@ function resetRun() {
 // почему бюджет размещён не весь: строки приходят от планировщика через `shortfall`
 function whyShort(p, skipPlaced) {
   const lines = (p.shortfall || []).filter(l => !(skipPlaced && l.startsWith('размещено')));
-  return lines.length ? `<ul class="why">${lines.map(l => `<li>${esc(ru(l))}</li>`).join('')}</ul>` : '';
+  if (!lines.length) return '';
+  // заказчику — первая причина, менеджеру весь разбор: остальные строки говорят про
+  // ёмкость и сроки, это его работа, а не разговор с клиентом
+  const items = lines.map((l, i) => `<li${i ? ' class="tech"' : ''}>${esc(ru(l))}</li>`).join('');
+  return `<ul class="why">${items}</ul>`;
 }
 function planActions(p) {
   const b = p.brief;
@@ -836,8 +840,9 @@ function renderPlan(p) {
   planActions(p);
   if (p.infeasibility) {
     const d = p.infeasibility, target = b.target_value, n = b.channel_ids.length;
+    d.suggestions = d.suggestions.filter(s => s.expected_kpi >= 1);
     const cheapest = Math.min(...d.suggestions.map(s => s.expected_budget_rub));
-    $('#plan-h1').innerHTML = 'Цель недостижима — есть три варианта';
+    $('#plan-h1').textContent = `Цель недостижима — ${(MOVES_H[d.suggestions.length] || d.suggestions.length + ' ' + pw(d.suggestions.length, ['вариант','варианта','вариантов'])).toLowerCase()}`;
     stage('plan', `недостижимо · ${d.suggestions.length} ${pw(d.suggestions.length, ['вариант','варианта','вариантов'])}`, '');
     body.innerHTML = `<p style="max-width:760px;font-size:18px;line-height:1.4;margin:8px 0 24px">С ${n === 1 ? 'одним каналом' : n + ' каналами'} за ${days(b.horizon_days)} максимум <b class="num">${kpiN(d.max_achievable, p.kpi_name)}</b> — на ${pct(1 - d.max_achievable / target, 0)} меньше цели ${fmt(target)}. Упирается в ${esc(d.binding_title || BINDING_RU[d.binding_constraint] || d.binding_constraint)}.</p>
       <div class="stats">${stat(['Цель', fmt(target), `${K.many} за ${days(b.horizon_days)}`, ''])}${stat(['Максимум при этих условиях', fmt(d.max_achievable), K.many, 'accent'])}${stat(['Упирается в', `<span style="font-size:22px">${esc(d.binding_title || BINDING_RU[d.binding_constraint] || d.binding_constraint)}</span>`, 'ограничение, которое не даёт дойти до цели', ''])}</div>
@@ -867,8 +872,11 @@ function renderPlan(p) {
     ['Самый загруженный канал', pct(busiest.capacity_utilization, 0), esc(busiest.display_name) + ' — доля выкупленной аудитории', (busiest.capacity_utilization >= 0.95 ? 'accent ' : '') + 'tech'],
   ];
   stage('plan', p.approved_version ? `утверждён · ${kpiN(f.p50, p.kpi_name)}` : `прогноз ${kpiN(f.p50, p.kpi_name)} · не утверждён`, p.approved_version ? 'done' : '');
-  const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : p._applied.field === 'max_cpa_rub' ? `потолок цены ${rub(b.max_cpa_rub)}` : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
-  const short = b.budget_rub && p.total_budget_rub < b.budget_rub - 1
+  const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : p._applied.field === 'max_cpa_rub' ? (b.max_cpa_rub ? `потолок цены ${fmt(b.max_cpa_rub, b.max_cpa_rub < 10 ? 2 : 0)} ₽` : 'потолок цены снят') : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
+  // плашка только когда недобор значим и планировщик назвал причину: на шаге наливания
+  // остаётся до сотни рублей, и тревожить этим человека нечем
+  const shortGap = b.budget_rub ? b.budget_rub - p.total_budget_rub : 0;
+  const short = shortGap > Math.max(1000, b.budget_rub * 0.005) && (p.shortfall || []).length
     ? `<div class="verdict note"><b>Бюджет размещён не весь: ${rub(p.total_budget_rub)} из ${rub(b.budget_rub)}.</b>${whyShort(p, true)}</div>` : '';
   body.innerHTML = `${applied}${short}${p._reserveNote ? `<div class="verdict note">${p._reserveNote}</div>` : ''}
     <div class="stats" style="margin-top:24px">${tiles.map(stat).join('')}</div>
@@ -915,7 +923,7 @@ function renderPeriods(p) {
     <div class="scroll"><table class="table"><thead><tr><th>Период</th><th>Бюджет, ₽</th><th>${h2('Бюджет', 'накопит.')}</th><th>${cap(K.nomPl)} накопит.</th><th>${h2('Доля', 'плана')}</th></tr></thead><tbody>${
       rows.map(r => `<tr><td>${label(r)}</td><td>${fmt(r.budget_rub)}</td><td>${fmt(r.cum_budget_rub)}</td><td>${fmt(r.cum_kpi)}</td><td>${pct(r.cum_kpi / (p.total_kpi || 1), 0)}</td></tr>`).join('')
     }</tbody></table></div>
-    <p class="muted" style="margin-top:12px;max-width:760px">Бюджет канала разложен по дням равномерно, поэтому недели отличаются только длиной хвоста: в последней неделе остаётся ${rows.length && byWeek ? days(p.series.days.length - (p.series.weeks.length - 1) * 7) : days(p.brief.horizon_days)} из семи. Накопление результата идёт быстрее в начале: дешёвые каналы выкупаются первыми.</p>`;
+    <p class="muted" style="margin-top:12px;max-width:760px">Бюджет канала разложен по дням пропорционально спросу, поэтому недели отличаются и составом дней, и длиной хвоста: в последней неделе остаётся ${rows.length && byWeek ? days(p.series.days.length - (p.series.weeks.length - 1) * 7) : days(p.brief.horizon_days)} из семи. Накопление результата идёт быстрее в начале: дешёвые каналы выкупаются первыми.</p>`;
   box.querySelectorAll('#periods-seg button').forEach(b => b.onclick = () => { VIEW.periods = b.dataset.p; renderPeriods(p); });
   fixHeaders(box);
 }
@@ -1105,7 +1113,7 @@ function renderPlanTable(p) {
   const nDays = p.brief.horizon_days, channels = p.allocations.map(a => a.channel_id);
   const cal = {}; for (const c of p.calendar) (cal[c.channel_id] ||= {})[c.day] = c.budget_rub;
   const calBox = $('#plan-calendar'); calBox.hidden = !VIEW.calendar;
-  if (VIEW.calendar) calBox.innerHTML = `<h4 style="margin:24px 0 12px">Календарь, тыс. ₽ в день</h4><div class="scroll"><table class="table" style="font-size:13px"><thead><tr><th>Канал</th>${Array.from({length: nDays}, (_, i) => `<th>${i+1}${dayDate(i+1) ? `<br><small>${dayDate(i+1)}</small>` : ''}</th>`).join('')}</tr></thead><tbody>${channels.map(c => `<tr><td>${esc(nm(c))}</td>${Array.from({length: nDays}, (_, i) => `<td>${fmt((cal[c]||{})[i+1]/1000, 1)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="muted" style="margin-top:12px">Бюджет каждого канала разложен по дням равномерно, внутри дня — по часам активности.<span class="tech"> Недельного профиля объёма нет ни в плане, ни в мире симулятора (README, раздел «упрощено»).</span></p>`;
+  if (VIEW.calendar) calBox.innerHTML = `<h4 style="margin:24px 0 12px">Календарь, тыс. ₽ в день</h4><div class="scroll"><table class="table" style="font-size:13px"><thead><tr><th>Канал</th>${Array.from({length: nDays}, (_, i) => `<th>${i+1}${dayDate(i+1) ? `<br><small>${dayDate(i+1)}</small>` : ''}</th>`).join('')}</tr></thead><tbody>${channels.map(c => `<tr><td>${esc(nm(c))}</td>${Array.from({length: nDays}, (_, i) => `<td>${fmt((cal[c]||{})[i+1]/1000, 1)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="muted" style="margin-top:12px">Бюджет каждого канала разложен по дням пропорционально спросу дня, внутри дня — по часам активности; тише всего выходные.<span class="tech"> Профиль недели планировщик оценивает по ретро-наблюдениям, скрытых параметров мира он не видит.</span></p>`;
   fixHeaders($('#plan-body'));
 }
 
@@ -1184,7 +1192,18 @@ function applySuggestion(s, n) {
   FORM.applied = {n, description: s.description, field: s.changed_field};
   if (s.changed_field === 'horizon_days') { if (s.suggested_value > +$('#horizon').max) { $('#brief-note').innerHTML = `<span class="err">${esc(s.why_not || 'срок длиннее лимита стенда')}</span>`; showScreen('brief'); return; } $('#horizon').value = s.suggested_value; }
   if (s.changed_field === 'target_value') setMoney('target_value', Math.round(s.suggested_value));
-  if (s.changed_field === 'max_cpa_rub') { setMoney('max_cpa', Math.round(s.suggested_value)); syncCpa(); }
+  if (s.changed_field === 'max_cpa_rub') {
+    // потолок живёт только у цели «конверсии»: если KPI брифа сменили после расчёта,
+    // syncCpa() очистил бы поле, и ход применился бы вхолостую
+    const kpiNow = FORM.mode === 'A' ? ($('#objective').value === 'max_conversions' ? 'conversions' : 'other') : $('#target_kpi').value;
+    if (PLAN && kpiNow !== PLAN.kpi_name) {
+      FORM.applied = null;
+      $('#brief-note').innerHTML = `<span class="err">Ход относится к цели «${esc(plural(2, PLAN.kpi_name))}», а в брифе теперь другая. Верните цель и примените ход снова.</span>`;
+      showScreen('brief');
+      return;
+    }
+    setMoney('max_cpa', s.suggested_value === null ? '' : Math.round(s.suggested_value * 100) / 100);
+  }
   if (s.changed_field === 'channel_ids') setChannels(s.suggested_value);
   makePlan();
 }

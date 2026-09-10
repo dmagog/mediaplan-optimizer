@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -85,12 +86,22 @@ SCENARIO_TITLES = {
 
 # строки планировщика о недоразмещении бюджета: кабинет показывает их отдельной плашкой,
 # а не только в раскрытом объяснении. Разбор строк держим здесь, рядом с контрактом плана
-SHORTFALL_PREFIXES = ("размещено ", "потолок средней цены ", "ёмкость каналов ", "ни один канал ", "весь бюджет ", "даже за ")
+SHORTFALL_PREFIXES = ("размещено ", "потолок средней цены ", "ёмкость каналов ", "ни один канал ", "ёмкости хватило бы ", "даже за ")
+# форма кабинета принимает срок не длиннее MAX_HORIZON_DAYS, а планировщик считает до
+# контрактных 90 дней: совет о сроке за пределами формы честнее назвать невыполнимым здесь
+_HORIZON_ADVICE = re.compile(r"^ёмкости хватило бы за (\d+) ")
+
+
+def _horizon_caveat(line: str) -> str:
+    match = _HORIZON_ADVICE.match(line)
+    if match and int(match.group(1)) > MAX_HORIZON_DAYS:
+        return f"{line} — это дольше {MAX_HORIZON_DAYS} дней, которые принимает бриф стенда"
+    return line
 
 BINDING_TITLES = {
     "capacity": "ёмкость каналов",
     "horizon": "срок кампании",
-    "economics": "цена результата",
+    "economics": "потолок цены",
     "channel_set": "набор каналов",
 }
 
@@ -759,7 +770,7 @@ def _plan_view(media_plan: MediaPlan) -> dict[str, Any]:
             s["why_not"] = f"дольше {MAX_HORIZON_DAYS} дней: за пределами калибровки" if too_long else None
         data["infeasibility"]["binding_title"] = BINDING_TITLES.get(media_plan.infeasibility.binding_constraint.value, media_plan.infeasibility.binding_constraint.value)
     data["is_empty"] = media_plan.is_feasible and (media_plan.total_budget_rub <= 0 or media_plan.total_kpi <= 0)
-    data["shortfall"] = [line for line in media_plan.explanation if line.startswith(SHORTFALL_PREFIXES)]
+    data["shortfall"] = [_horizon_caveat(line) for line in media_plan.explanation if line.startswith(SHORTFALL_PREFIXES)]
     if media_plan.is_feasible and media_plan.allocations:
         data["totals"] = _plan_totals(media_plan)
         data["series"] = _plan_series(media_plan)
