@@ -130,10 +130,11 @@ def test_invalid_actions_are_rejected():
 
 
 def test_full_episode_runs_in_seconds():
+    """Эпизод в 504 часа считается за секунды процессорного времени (см. test_full_run_is_fast)."""
     sim = Simulator(build_catalog(0))
-    started = time.perf_counter()
+    started = time.process_time()
     _run(sim, SeedBundle(catalog_seed=0, world_seed=1, noise_seed=1))
-    assert time.perf_counter() - started < 3.0
+    assert time.process_time() - started < 3.0
 
 
 def test_catalog_has_no_hidden_parameters():

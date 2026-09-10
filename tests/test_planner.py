@@ -13,9 +13,9 @@ from contracts import BindingConstraint, Brief, TargetKpi
 
 
 def test_demo1_plan_is_complete_and_fast(catalog, curves, demo_brief):
-    started = time.perf_counter()
+    started = time.process_time()
     p = plan(demo_brief, catalog, curves)
-    assert time.perf_counter() - started < 2.0
+    assert time.process_time() - started < 2.0
     assert p.is_feasible
     assert abs(p.total_budget_rub - 1_200_000) < 1_200_000 * 0.01
     assert len(p.allocations) == 8 and len(p.trajectory) == 21 * 24 and len(p.hourly_caps) == 21 * 24
@@ -239,9 +239,9 @@ def test_shortfall_diagnosis_stays_fast(catalog, curves):
     """
     over = Brief(budget_rub=9_000_000, horizon_days=21, channel_ids=catalog.channel_ids)
     plan(over, catalog, curves)  # прогрев: первый вызов строит кривые и сетки
-    started = time.perf_counter()
+    started = time.process_time()
     p = plan(over, catalog, curves)
-    assert time.perf_counter() - started < 1.5
+    assert time.process_time() - started < 1.5
     assert any("ёмкость каналов" in line for line in p.explanation)
 
 
@@ -257,3 +257,45 @@ def test_plan_never_costs_more_than_the_brief(catalog, curves):
         )
         p = plan(brief, catalog, curves)
         assert p.total_budget_rub <= 1_200_000 + 1e-6, (locked, p.total_budget_rub)
+
+
+def test_price_ceiling_binds_the_free_part_when_a_channel_is_locked(catalog, curves):
+    """Фиксация дороже потолка не отменяет потолок для остальных денег.
+
+    Правило «порция проходит, если средняя снижается» позволяло покупать свободные
+    каналы в три-четыре раза дороже потолка, лишь бы дешевле дорогой фиксации.
+    Лимит считается по свободной части: она налита не дороже потолка, а средняя по
+    плану выше только из-за фиксации, и план об этом говорит.
+    """
+    locked = {"marketplace_3": 205_794.52}
+    brief = Brief(
+        budget_rub=500_000, horizon_days=30, channel_ids=catalog.channel_ids,
+        max_cpa_rub=100.0, locked=locked,
+    )
+    p = plan(brief, catalog, curves)
+    free = [a for a in p.allocations if a.channel_id not in locked]
+    free_spend = sum(a.budget_rub for a in free)
+    free_kpi = sum(a.conversions for a in free)
+    assert free_kpi > 0 and free_spend / free_kpi <= 100.0 * 1.01
+    assert any("фиксации стоят" in line for line in p.explanation)
+
+    # тип B с той же фиксацией обязан отказать, а не выдать план дороже потолка втрое
+    target = Brief(
+        target_kpi=TargetKpi.CONVERSIONS, target_value=600.0, horizon_days=30,
+        channel_ids=catalog.channel_ids, max_cpa_rub=100.0, locked=locked,
+    )
+    refused = plan(target, catalog, curves)
+    assert refused.infeasibility is not None
+
+
+def test_move_promises_what_the_plan_delivers(catalog, curves):
+    """Карточка хода обещает числа посчитанного плана, а не вход бисекции."""
+    brief = Brief(
+        target_kpi=TargetKpi.CONVERSIONS, target_value=1_500.0, horizon_days=21,
+        channel_ids=catalog.channel_ids, max_cpa_rub=100.0,
+    )
+    p = plan(brief, catalog, curves)
+    move = next(s for s in p.infeasibility.suggestions if s.changed_field == "target_value")
+    applied = plan(brief.model_copy(update={"target_value": move.suggested_value}), catalog, curves)
+    assert abs(applied.total_budget_rub - move.expected_budget_rub) <= max(1.0, move.expected_budget_rub * 0.02)
+    assert abs(applied.total_kpi - move.expected_kpi) <= move.expected_kpi * 0.05

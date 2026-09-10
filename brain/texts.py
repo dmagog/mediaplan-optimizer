@@ -29,6 +29,21 @@ def days_word_gen(n: int) -> str:
     return "дня" if n % 10 == 1 else "дней"
 
 
+def kpi_word_gen(n: float, kpi: str) -> str:
+    """Родительный падеж после предлога: «до 21 конверсии», «до 23 конверсий», «не больше 5 кликов»."""
+    forms = {
+        "conversions": ("конверсии", "конверсий"),
+        "clicks": ("клика", "кликов"),
+        "reach": ("охвата", "охвата"),
+    }.get(kpi)
+    if forms is None:
+        return kpi
+    k = abs(int(round(n)))
+    if 11 <= k % 100 <= 14:
+        return forms[1]
+    return forms[0] if k % 10 == 1 else forms[1]
+
+
 def kpi_word(n: float, kpi: str) -> str:
     """Согласование с числом: «533 конверсии», «21 конверсия», «530 конверсий»."""
     forms = {

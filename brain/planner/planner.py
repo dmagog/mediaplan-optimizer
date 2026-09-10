@@ -33,7 +33,16 @@ from brain.planner.allocator import (
     build_models,
     day_weights,
 )
-from brain.texts import days_word, days_word_gen, kpi_label, kpi_unit, kpi_word, num, price, rub
+from brain.texts import (
+    days_word,
+    days_word_gen,
+    kpi_unit,
+    kpi_word,
+    kpi_word_gen,
+    num,
+    price,
+    rub,
+)
 from contracts import (
     BindingConstraint,
     Brief,
@@ -146,18 +155,20 @@ def _min_budget_for(models, target: float, kpi: str, locked, max_cpa, reach_mode
     return hi
 
 
-def _budget_for(models, target: float, kpi: str, locked, max_cpa, reach_model=None) -> float:
-    """Сколько денег план под цель действительно разместит.
+def _promise(models, target: float, kpi: str, locked, max_cpa, reach_model=None) -> tuple[float, float]:
+    """Что план под эту цель на самом деле даст: сколько потратит и сколько принесёт.
 
     Бисекция даёт бюджет, который надо *дать*, а при связывающем потолке цены
-    наливание останавливается раньше и тратит заметно меньше: карточка хода обещала
-    3,5 млн там, где план потратит 23 тысячи. Человеку показываем второе.
+    наливание останавливается раньше: карточка хода обещала 3,5 млн ₽ там, где план
+    потратит 23 тысячи, и 207 конверсий там, где выйдет 219. Считаем план целиком и
+    показываем человеку его числа, а не вход бисекции.
     """
     budget = _min_budget_for(models, target, kpi, locked, max_cpa, reach_model)
     result = allocate(
         models, budget, kpi, locked, max_cpa, steps=ALLOCATION_STEPS, reach_model=reach_model
     )
-    return sum(result.budgets.values())
+    return sum(result.budgets.values()), _kpi_of(models, result.budgets, kpi, reach_model)
+
 
 
 def _cap_that_reaches(models, brief: Brief, target: float, kpi: str, reach_model) -> float | None:
@@ -210,12 +221,12 @@ def _lower_target_suggestion(models, brief: Brief, max_kpi: float, kpi: str, rea
     reachable = max_kpi * REACHABLE_TARGET_MARGIN
     if round(reachable) < 1:
         return None
-    budget = _budget_for(models, reachable, kpi, brief.locked, brief.max_cpa_rub, reach_model)
+    budget, promised = _promise(models, reachable, kpi, brief.locked, brief.max_cpa_rub, reach_model)
     return BriefSuggestion(
-        description=f"Снизить цель до {num(reachable)} {kpi_label(kpi)} при тех же каналах и сроке",
+        description=f"Снизить цель до {num(reachable)} {kpi_word_gen(reachable, kpi)} при тех же каналах и сроке",
         changed_field="target_value",
         suggested_value=float(round(reachable)),
-        expected_kpi=float(reachable),
+        expected_kpi=float(max(promised, reachable)),
         expected_budget_rub=float(budget),
     )
 
@@ -253,7 +264,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
                         suggested_value=float(cap),
                         expected_kpi=float(target),
                         expected_budget_rub=float(
-                            _budget_for(models, target, kpi, brief.locked, cap, ctx.reach_model)
+                            _promise(models, target, kpi, brief.locked, cap, ctx.reach_model)[0]
                         ),
                     )
                 )
@@ -265,7 +276,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
                         suggested_value=None,
                         expected_kpi=float(target),
                         expected_budget_rub=float(
-                            _budget_for(models, target, kpi, brief.locked, None, ctx.reach_model)
+                            _promise(models, target, kpi, brief.locked, None, ctx.reach_model)[0]
                         ),
                     )
                 )
@@ -277,7 +288,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
                 binding_constraint=BindingConstraint.ECONOMICS,
                 explanation=(
                     f"Ёмкости каналов хватает, но потолок средней цены {price(brief.max_cpa_rub)} "
-                    f"пропускает не больше {num(max_kpi)} {kpi_label(kpi)}; без потолка достижимо "
+                    f"пропускает не больше {num(max_kpi)} {kpi_word_gen(max_kpi, kpi)}; без потолка достижимо "
                     f"{num(free_max)}, цель {num(target)} достижима{reachable_at}."
                 ),
                 max_achievable=max_kpi,
@@ -310,7 +321,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
                 low = mid + 1
         min_days = low
         m = models_for(min_days)
-        budget = _budget_for(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+        budget = _promise(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)[0]
         suggestions.append(
             BriefSuggestion(
                 description=f"Увеличить срок до {min_days} {days_word_gen(min_days)}",
@@ -331,7 +342,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         wide_models = wide.models()
         wide_max = _total_kpi(wide_models, _max_budget(wide_models), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
         if wide_max >= target:
-            budget = _budget_for(wide_models, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+            budget = _promise(wide_models, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)[0]
             suggestions.append(
                 BriefSuggestion(
                     description=f"Добавить каналы: {', '.join(extra)}",
@@ -344,7 +355,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
             constraint = BindingConstraint.CHANNEL_SET
             explanation = (
                 f"При выбранных каналах максимум за {brief.horizon_days} {days_word(brief.horizon_days)} "
-                f"{num(max_kpi)} {kpi_label(kpi)}; с добавлением {', '.join(extra)} цель достижима."
+                f"{num(max_kpi)} {kpi_word(max_kpi, kpi)}; с добавлением {', '.join(extra)} цель достижима."
             )
             return Infeasibility(
                 binding_constraint=constraint, explanation=explanation, max_achievable=max_kpi, suggestions=suggestions
@@ -354,12 +365,12 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         constraint = BindingConstraint.HORIZON
         explanation = (
             f"Ёмкости каналов хватает, но не за {brief.horizon_days} {days_word(brief.horizon_days)}: потолок "
-            f"{num(max_kpi)} {kpi_label(kpi)}; цель достижима минимум за {min_days} {days_word(min_days)}."
+            f"{num(max_kpi)} {kpi_word(max_kpi, kpi)}; цель достижима минимум за {min_days} {days_word(min_days)}."
         )
     else:
         constraint = BindingConstraint.CAPACITY
         explanation = (
-            f"Суммарная ёмкость выбранных каналов даёт не более {num(max_kpi)} {kpi_label(kpi)} "
+            f"Суммарная ёмкость выбранных каналов даёт не более {num(max_kpi)} {kpi_word_gen(max_kpi, kpi)} "
             f"даже при максимальном выкупе; цель {num(target)} недостижима."
         )
     return Infeasibility(
@@ -418,7 +429,7 @@ def _shortfall_notes(brief: Brief, ctx: PlanningContext, models, result: Allocat
     ceiling = _max_budget(models)
     notes.append(
         f"ёмкость каналов за {brief.horizon_days} {days_word(brief.horizon_days)} принимает не больше "
-        f"{rub(ceiling)}: деньги сверх этого мир просто не выкупит"
+        f"{rub(ceiling)}: деньги сверх этого рынок не выкупит"
     )
     low, high = brief.horizon_days + 1, MAX_HORIZON_DAYS
     if low <= high and _capacity_ceiling(ctx, high) >= brief.budget_rub + slack:

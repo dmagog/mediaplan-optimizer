@@ -25,9 +25,14 @@ def test_baselines_complete_episode(demo_plan, catalog, curves):
 
 
 def test_full_run_is_fast(demo_plan, catalog, curves):
-    started = time.perf_counter()
+    """Прогон кампании считается за секунды процессорного времени.
+
+    Меряем process_time, а не настенные часы: на машине, где параллельно идёт стенд,
+    настенное время растёт от очереди к процессору, и тест краснел на здоровом коде.
+    """
+    started = time.process_time()
     run_campaign(demo_plan, catalog, curves, _cfg("adaptive"))
-    assert time.perf_counter() - started < 5.0
+    assert time.process_time() - started < 5.0
 
 
 def test_detector_silent_without_shock(demo_plan, catalog, curves):

@@ -189,9 +189,9 @@ def test_competitors_are_optional_bounded_paired_and_channel_specific():
 
 def test_extended_manifest_full_21_day_replay_and_no_leakage():
     settings = WorldSettings(competitors=[Competitor(competitor_id="rival", channel_advantages={"social_1": 1})])
-    start = time.perf_counter()
+    start = time.process_time()
     sim, rows = run_sim(settings, scenario="fraud_surge", hours=504, targeting=AudienceTargeting(geo=["large_cities"]))
-    assert time.perf_counter() - start < 5
+    assert time.process_time() - start < 5
     manifest = json.loads(json.dumps(sim.export_manifest()))
     replay = Simulator.from_manifest(manifest)
     action = Action(spend_caps=dict.fromkeys(sim.catalog.channel_ids, 1000))
