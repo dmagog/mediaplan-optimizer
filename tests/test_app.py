@@ -392,3 +392,11 @@ def test_zero_and_negative_budget_are_rejected_with_their_own_message(client):
     r = client.post("/api/plan", json={**DEMO2, "target_value": -10})
     assert r.status_code == 422
     assert "целевой объём должен быть больше нуля" in r.json()["detail"]
+
+
+def test_plan_view_exposes_why_budget_is_not_placed(client):
+    """Кабинету нужны строки о недоразмещении отдельно от общего объяснения."""
+    data = _plan(client, {**DEMO1, "max_cpa_rub": 100})
+    assert data["total_budget_rub"] < 1_200_000
+    assert data["shortfall"], "кабинету нечего показать про недоразмещение"
+    assert any("потолок средней цены" in line for line in data["shortfall"])

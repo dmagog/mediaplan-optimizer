@@ -83,6 +83,10 @@ SCENARIO_TITLES = {
     "demand_surge": "всплеск спроса в соцсетях на двое суток",
 }
 
+# строки планировщика о недоразмещении бюджета: кабинет показывает их отдельной плашкой,
+# а не только в раскрытом объяснении. Разбор строк держим здесь, рядом с контрактом плана
+SHORTFALL_PREFIXES = ("размещено ", "потолок средней цены ", "ёмкость каналов ", "ни один канал ", "весь бюджет ", "даже за ")
+
 BINDING_TITLES = {
     "capacity": "ёмкость каналов",
     "horizon": "срок кампании",
@@ -413,7 +417,12 @@ def _check_plan_usable(media_plan: MediaPlan) -> None:
     if not media_plan.is_feasible:
         raise HTTPException(409, "план недостижим: примените один из предложенных вариантов и утвердите новый план")
     if media_plan.total_budget_rub <= 0 or media_plan.total_kpi <= 0:
-        raise HTTPException(409, "план пуст: ни один канал не проходит потолок CPA — поднимите потолок или уберите его")
+        reason = (
+            "ни один канал не проходит потолок цены — поднимите его или уберите"
+            if media_plan.brief.max_cpa_rub is not None
+            else "каналы не берут этот бюджет — измените срок, набор каналов или сумму"
+        )
+        raise HTTPException(409, f"план пуст: {reason}")
 
 
 @app.post("/api/run")
@@ -750,6 +759,7 @@ def _plan_view(media_plan: MediaPlan) -> dict[str, Any]:
             s["why_not"] = f"дольше {MAX_HORIZON_DAYS} дней: за пределами калибровки" if too_long else None
         data["infeasibility"]["binding_title"] = BINDING_TITLES.get(media_plan.infeasibility.binding_constraint.value, media_plan.infeasibility.binding_constraint.value)
     data["is_empty"] = media_plan.is_feasible and (media_plan.total_budget_rub <= 0 or media_plan.total_kpi <= 0)
+    data["shortfall"] = [line for line in media_plan.explanation if line.startswith(SHORTFALL_PREFIXES)]
     if media_plan.is_feasible and media_plan.allocations:
         data["totals"] = _plan_totals(media_plan)
         data["series"] = _plan_series(media_plan)

@@ -211,6 +211,8 @@
   .verdict{padding:16px 20px;background:var(--color-surface);border-top:2px solid var(--color-text);font-size:14px;margin:16px 0}
   .verdict.alert{border-top-color:var(--color-accent)} .verdict.alert b{color:var(--color-accent-700)}
   .verdict.ok{border-top-color:var(--color-text)}
+  .why{margin:8px 0 0;padding-left:20px;font-size:14px;line-height:1.5}
+  .why li{margin:2px 0}
   .verdict.note{border-top-color:var(--color-divider)}
   .pill{display:inline-flex;align-items:center;padding:8px 14px;font-family:var(--font-heading);font-weight:var(--font-heading-weight);font-size:15px;white-space:nowrap}
   .pill.ok{background:var(--color-neutral-200);color:var(--color-text)} .pill.watch{background:var(--color-text);color:var(--color-bg)} .pill.fire{background:var(--color-accent-600);color:#fff}
@@ -456,6 +458,7 @@ const plural = (n, k) => { const w = KPI[k]; const a = Math.abs(Math.round(n)) %
 // acc=true — винительный падеж после «обещали / получили / ожидаем»: одна конверсия → «конверсию»
 const kpiN = (n, k, acc=false) => { const w = KPI[k], p = plural(n, k); return fmt(n) + ' ' + (acc && p === w.one ? w.acc : p); };
 const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const MOVES_H = {1: 'Вариант', 2: 'Два варианта', 3: 'Три варианта', 4: 'Четыре варианта'};
 const pw = (n, f) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? f[2] : b === 1 ? f[0] : b >= 2 && b <= 4 ? f[1] : f[2]; };
 const days = (n) => `${n} ${pw(n, ['день','дня','дней'])}`;
 const sutki = (n) => ({1:'сутки', 2:'двое суток', 3:'трое суток', 4:'четверо суток'})[n] || `${n} суток`;
@@ -806,6 +809,11 @@ function resetRun() {
   stage('run', 'после утверждения', ''); stage('summary', 'в конце кампании', '');
 }
 
+// почему бюджет размещён не весь: строки приходят от планировщика через `shortfall`
+function whyShort(p, skipPlaced) {
+  const lines = (p.shortfall || []).filter(l => !(skipPlaced && l.startsWith('размещено')));
+  return lines.length ? `<ul class="why">${lines.map(l => `<li>${esc(ru(l))}</li>`).join('')}</ul>` : '';
+}
 function planActions(p) {
   const b = p.brief;
   const simple = document.body.dataset.level === 'simple';
@@ -833,14 +841,20 @@ function renderPlan(p) {
     stage('plan', `недостижимо · ${d.suggestions.length} ${pw(d.suggestions.length, ['вариант','варианта','вариантов'])}`, '');
     body.innerHTML = `<p style="max-width:760px;font-size:18px;line-height:1.4;margin:8px 0 24px">С ${n === 1 ? 'одним каналом' : n + ' каналами'} за ${days(b.horizon_days)} максимум <b class="num">${kpiN(d.max_achievable, p.kpi_name)}</b> — на ${pct(1 - d.max_achievable / target, 0)} меньше цели ${fmt(target)}. Упирается в ${esc(d.binding_title || BINDING_RU[d.binding_constraint] || d.binding_constraint)}.</p>
       <div class="stats">${stat(['Цель', fmt(target), `${K.many} за ${days(b.horizon_days)}`, ''])}${stat(['Максимум при этих условиях', fmt(d.max_achievable), K.many, 'accent'])}${stat(['Упирается в', `<span style="font-size:22px">${esc(d.binding_title || BINDING_RU[d.binding_constraint] || d.binding_constraint)}</span>`, 'ограничение, которое не даёт дойти до цели', ''])}</div>
-      <h4 style="margin:32px 0 16px">Три варианта с посчитанным результатом</h4>
+      <h4 style="margin:32px 0 16px">${MOVES_H[d.suggestions.length] || d.suggestions.length + ' ' + pw(d.suggestions.length, ['вариант','варианта','вариантов'])} с посчитанным результатом</h4>
       <div class="moves">${d.suggestions.map((s,i)=>`<div class="move"${s.expected_budget_rub === cheapest ? ' style="border-top:2px solid var(--color-accent)"' : ''}><div class="card-kicker">вариант ${i+1}${s.expected_budget_rub === cheapest ? ' · дешевле всего, советуем' : ''}</div><div class="card-title">${esc(ru(s.description))}</div><p class="card-body">ожидаем <b class="num">${kpiN(s.expected_kpi, p.kpi_name, true)}</b> при бюджете <b class="num">${rub(s.expected_budget_rub)}</b> — около ${fmt(s.expected_budget_rub / s.expected_kpi, s.expected_budget_rub / s.expected_kpi < 10 ? 2 : 0)}&nbsp;₽ за ${K.acc}</p>${s.applicable === false ? `<div><button class="btn btn-secondary" disabled>Применить</button> <span class="muted">${esc(s.why_not || '')}</span></div>` : `<button class="btn ${s.expected_budget_rub === cheapest ? 'btn-primary' : 'btn-secondary'}" style="align-self:flex-start" data-i="${i}">Применить и пересчитать</button>`}</div>`).join('')}</div>
       ${GEO.ids.length ? `<p class="muted" style="margin-top:16px;max-width:760px">Ещё один ход, которого нет в списке: <b>расширить географию</b>. Сейчас выбрано ${pct(geoShare(), 0)} аудитории страны, и ёмкость каналов пересчитана на неё — на всю Россию тот же бюджет даёт заметно больше.</p>` : ''}
-      <p class="muted tech" style="margin-top:24px;max-width:640px">Отказ без числа читается как нежелание расти. Здесь три варианта с посчитанным результатом: разговор с клиентом становится выбором, а не спором.</p>`;
+      <p class="muted tech" style="margin-top:24px;max-width:640px">Отказ без числа читается как нежелание расти. Здесь варианты с посчитанным результатом: разговор с клиентом становится выбором, а не спором.</p>`;
     body.querySelectorAll('button[data-i]').forEach(bt => bt.onclick = () => applySuggestion(d.suggestions[+bt.dataset.i], +bt.dataset.i + 1));
     return;
   }
-  if (p.is_empty) { $('#plan-h1').textContent = 'План пуст'; stage('plan', 'план пуст', ''); body.innerHTML = '<div class="verdict alert"><b>Ни один канал не проходит потолок CPA.</b> Поднимите потолок или уберите его.</div>'; return; }
+  if (p.is_empty) {
+    $('#plan-h1').textContent = 'План пуст'; stage('plan', 'план пуст', '');
+    const head = b.max_cpa_rub ? '<b>Ни один канал не проходит потолок цены.</b> Поднимите потолок или уберите его.'
+      : '<b>Каналы не берут этот бюджет.</b> Измените срок, набор каналов или сумму.';
+    body.innerHTML = `<div class="verdict alert">${head}</div>${whyShort(p)}`;
+    return;
+  }
   $('#plan-h1').innerHTML = `Медиаплан <span class="badge ${p.approved_version ? '' : 'outline'}" id="plan-approved">${p.approved_version ? 'утверждён, версия ' + p.approved_version : 'не утверждён'}</span>`;
   const f = p.forecast, unit = p.total_budget_rub / (p.total_kpi || 1), pr = p._promise || {mode: 'median', value: f.p50};
   const busiest = p.allocations.reduce((m, a) => a.capacity_utilization > m.capacity_utilization ? a : m, p.allocations[0]);
@@ -853,8 +867,10 @@ function renderPlan(p) {
     ['Самый загруженный канал', pct(busiest.capacity_utilization, 0), esc(busiest.display_name) + ' — доля выкупленной аудитории', (busiest.capacity_utilization >= 0.95 ? 'accent ' : '') + 'tech'],
   ];
   stage('plan', p.approved_version ? `утверждён · ${kpiN(f.p50, p.kpi_name)}` : `прогноз ${kpiN(f.p50, p.kpi_name)} · не утверждён`, p.approved_version ? 'done' : '');
-  const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
-  body.innerHTML = `${applied}${p._reserveNote ? `<div class="verdict note">${p._reserveNote}</div>` : ''}
+  const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : p._applied.field === 'max_cpa_rub' ? `потолок цены ${rub(b.max_cpa_rub)}` : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
+  const short = b.budget_rub && p.total_budget_rub < b.budget_rub - 1
+    ? `<div class="verdict note"><b>Бюджет размещён не весь: ${rub(p.total_budget_rub)} из ${rub(b.budget_rub)}.</b>${whyShort(p, true)}</div>` : '';
+  body.innerHTML = `${applied}${short}${p._reserveNote ? `<div class="verdict note">${p._reserveNote}</div>` : ''}
     <div class="stats" style="margin-top:24px">${tiles.map(stat).join('')}</div>
     <p class="muted" style="margin-top:8px;max-width:820px">Лимит на один перенос: ${b.automation_limit_rub ? rub(b.automation_limit_rub) + ' — переносы дороже <span class="tech">будут ждать вашего решения</span><span class="simple">решает менеджер</span> на шаге 3' : 'не задан — автоматика решает сама'}. Изменить — в брифе, кнопка «Изменить правила».</p>
     <div id="whatif"></div><div id="stress" class="tech"></div>
@@ -1168,6 +1184,7 @@ function applySuggestion(s, n) {
   FORM.applied = {n, description: s.description, field: s.changed_field};
   if (s.changed_field === 'horizon_days') { if (s.suggested_value > +$('#horizon').max) { $('#brief-note').innerHTML = `<span class="err">${esc(s.why_not || 'срок длиннее лимита стенда')}</span>`; showScreen('brief'); return; } $('#horizon').value = s.suggested_value; }
   if (s.changed_field === 'target_value') setMoney('target_value', Math.round(s.suggested_value));
+  if (s.changed_field === 'max_cpa_rub') { setMoney('max_cpa', Math.round(s.suggested_value)); syncCpa(); }
   if (s.changed_field === 'channel_ids') setChannels(s.suggested_value);
   makePlan();
 }
