@@ -21,13 +21,32 @@ from app.geo import audience_share, scale_catalog
 from brain.curves import build_curves  # noqa: E402
 from brain.planner import plan  # noqa: E402
 from contracts import Brief, SeedBundle, ShockEvent, ShockParameter, TargetKpi  # noqa: E402
-from harness.compare import compare_strategies, summary_table  # noqa: E402
+from harness.compare import compare_strategies  # noqa: E402
 from harness.retro import collect_retro_history  # noqa: E402
 from harness.runner import RunConfig, run_campaign  # noqa: E402
 from world import build_catalog  # noqa: E402
 
 RESULTS = Path(__file__).resolve().parent.parent / "results"
 NARROW_PRESET = ["social_2", "social_3", "marketplace_1", "sms"]
+
+
+def _summary_table(strategies: dict[str, dict]) -> str:
+    """Та же таблица, что печатает harness.compare.summary_table, но из сохранённых средних.
+
+    Нужна, чтобы секции стенда собирались одинаково и из живого прогона, и из
+    ``results/comparison.json``: иначе форматирование двоилось бы.
+    """
+    columns = ("mape_spend", "mape_kpi", "final_deviation_spend", "final_deviation_kpi", "unsmoothness", "lambda_cv")
+    header = f"{'strategy':22s} {'MAPE spend':>11s} {'MAPE kpi':>9s} {'dev spend':>10s} {'dev kpi':>8s} {'unsmooth':>9s} {'λ cv':>6s}"
+    rows = [header]
+    for name, data in strategies.items():
+        mean = data["mean"]
+        rows.append(
+            f"{name:22s} {mean[columns[0]]:>10.1%} {mean[columns[1]]:>8.1%} "
+            f"{mean[columns[2]]:>9.1%} {mean[columns[3]]:>7.1%} "
+            f"{mean[columns[4]]:>8.2f} {mean[columns[5]]:>6.2f}"
+        )
+    return "\n".join(rows)
 
 
 def _histogram(dev_a, dev_s, scenario: str, seeds: int, out_dir: Path, threshold: float) -> None:
@@ -61,6 +80,11 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, default=20)
     parser.add_argument("--scenarios", default="stable,ctr_drop,cpm_spike,channel_pause,capacity_cut")
     parser.add_argument("--figures", default="docs/figures", help="куда писать гистограммы отклонений (нужен matplotlib)")
+    parser.add_argument(
+        "--reuse-comparison", action="store_true",
+        help="взять секции стенда из results/comparison.json прошлого прогона: демонстрации "
+             "пересчитываются, стенд (полчаса на сотне миров) — нет",
+    )
     args = parser.parse_args()
     RESULTS.mkdir(exist_ok=True)
 
@@ -134,31 +158,43 @@ def main() -> None:
     report.append("")
 
     # --- Стенд: четыре стратегии, сценарии, парные миры
-    comparison: dict[str, dict] = {}
-    report += [f"## Стенд: {args.seeds} парных миров, четыре стратегии", ""]
     threshold = 0.20  # порог кейса: отклонение в конце не более 20 %
-    for scenario in args.scenarios.split(","):
-        stats = compare_strategies(demo1, catalog, curves, scenario_id=scenario, seeds=args.seeds)
-        comparison[scenario] = {name: st.to_dict() for name, st in stats.items()}
-        report += [f"### Сценарий {scenario}", "", "```", summary_table(stats), "```", ""]
-        adaptive_st, static_st = stats["adaptive"], stats["static"]
-        dev_a = np.array([r.final_deviation_kpi for r in adaptive_st.runs])
-        dev_s = np.array([r.final_deviation_kpi for r in static_st.runs])
+    saved = RESULTS / "comparison.json"
+    if args.reuse_comparison and saved.exists():
+        comparison = json.loads(saved.read_text(encoding="utf-8"))
+        report += [
+            f"## Стенд: {args.seeds} парных миров, четыре стратегии", "",
+            "Секции стенда взяты из `results/comparison.json` прошлого прогона "
+            "(`--reuse-comparison`): демонстрации выше пересчитаны, кампании — нет.", "",
+        ]
+    else:
+        comparison = {}
+        report += [f"## Стенд: {args.seeds} парных миров, четыре стратегии", ""]
+        for scenario in args.scenarios.split(","):
+            stats = compare_strategies(demo1, catalog, curves, scenario_id=scenario, seeds=args.seeds)
+            comparison[scenario] = {name: st.to_dict() for name, st in stats.items()}
+        saved.write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    for scenario, strategies in comparison.items():
+        report += [f"### Сценарий {scenario}", "", "```", _summary_table(strategies), "```", ""]
+        adaptive, static = strategies["adaptive"], strategies["static"]
+        dev_a = np.array([r["final_deviation_kpi"] for r in adaptive["per_run"]])
+        dev_s = np.array([r["final_deviation_kpi"] for r in static["per_run"]])
+        seeds = len(dev_a)
         report.append(
-            f"Победы adaptive над static по отклонению KPI в конце: {adaptive_st.win_rate_vs_static['final_deviation_kpi']:.0%} миров; "
-            f"парная дельта MAPE расхода {adaptive_st.paired_delta_vs_static['mape_spend']:+.1%}, "
-            f"KPI в среднем {adaptive_st.to_dict()['mean_actual_kpi']:,.0f} против {static_st.to_dict()['mean_actual_kpi']:,.0f}."
+            f"Победы adaptive над static по отклонению KPI в конце: {adaptive['win_rate_vs_static']['final_deviation_kpi']:.0%} миров; "
+            f"парная дельта MAPE расхода {adaptive['paired_delta_vs_static']['mape_spend']:+.1%}, "
+            f"KPI в среднем {adaptive['mean_actual_kpi']:,.0f} против {static['mean_actual_kpi']:,.0f}."
         )
         report.append(
-            f"Распределение отклонения KPI в конце по {args.seeds} мирам: наша медиана {np.median(dev_a):.1%}, "
+            f"Распределение отклонения KPI в конце по {seeds} мирам: наша медиана {np.median(dev_a):.1%}, "
             f"P90 {np.percentile(dev_a, 90):.1%}, в пороге кейса {np.mean(dev_a <= threshold):.0%} миров; "
             f"заморозка: медиана {np.median(dev_s):.1%}, P90 {np.percentile(dev_s, 90):.1%}, в пороге {np.mean(dev_s <= threshold):.0%}."
         )
-        alarms = sum(len(r.detection_hours) for r in stats["static"].runs) / max(len(stats["static"].runs), 1)
+        alarms = sum(len(r["detection_hours"]) for r in static["per_run"]) / max(seeds, 1)
         report.append(f"Срабатываний детектора на кампанию (static, без учёта причины): {alarms:.2f}.")
         report.append("")
-        _histogram(dev_a, dev_s, scenario, args.seeds, Path(args.figures), threshold)
-    (RESULTS / "comparison.json").write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
+        _histogram(dev_a, dev_s, scenario, seeds, Path(args.figures), threshold)
 
     report.append(f"Время стенда: {time.perf_counter() - started:.0f} с.")
     (RESULTS / "report.md").write_text("\n".join(report), encoding="utf-8")

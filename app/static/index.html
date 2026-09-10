@@ -458,7 +458,7 @@ const plural = (n, k) => { const w = KPI[k]; const a = Math.abs(Math.round(n)) %
 // acc=true — винительный падеж после «обещали / получили / ожидаем»: одна конверсия → «конверсию»
 const kpiN = (n, k, acc=false) => { const w = KPI[k], p = plural(n, k); return fmt(n) + ' ' + (acc && p === w.one ? w.acc : p); };
 const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
-const MOVES_H = {1: 'Вариант', 2: 'Два варианта', 3: 'Три варианта', 4: 'Четыре варианта'};
+const MOVES_H = {1: 'Один вариант', 2: 'Два варианта', 3: 'Три варианта', 4: 'Четыре варианта'};
 const pw = (n, f) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? f[2] : b === 1 ? f[0] : b >= 2 && b <= 4 ? f[1] : f[2]; };
 const days = (n) => `${n} ${pw(n, ['день','дня','дней'])}`;
 const sutki = (n) => ({1:'сутки', 2:'двое суток', 3:'трое суток', 4:'четверо суток'})[n] || `${n} суток`;
@@ -536,7 +536,14 @@ function syncSticky() {
 // Потолок CPA имеет смысл только для конверсий: при кликах и охвате поле прячем
 function syncCpa() {
   const kpi = FORM.mode === 'A' ? ($('#objective').value === 'max_conversions' ? 'conversions' : 'other') : $('#target_kpi').value;
-  const on = kpi === 'conversions'; $('#f-cpa').hidden = !on; if (!on) $('#max_cpa').value = ''; if (META) renderRules();
+  const on = kpi === 'conversions';
+  $('#f-cpa').hidden = !on;
+  if (!on && $('#max_cpa').value) {
+    // потолок цены задаётся только для конверсий: молча стирать заданное человеком число нельзя
+    $('#brief-note').innerHTML = '<span class="muted">Потолок цены снят: он задаётся только для цели «конверсии».</span>';
+  }
+  if (!on) $('#max_cpa').value = '';
+  if (META) renderRules();
 }
 function setMode(m) {
   FORM.mode = m; const a = m === 'A';
@@ -855,6 +862,7 @@ function renderPlan(p) {
   }
   if (p.is_empty) {
     $('#plan-h1').textContent = 'План пуст'; stage('plan', 'план пуст', '');
+    p = {...p, shortfall: (p.shortfall || []).filter(l => !l.startsWith('ни один канал'))};
     const head = b.max_cpa_rub ? '<b>Ни один канал не проходит потолок цены.</b> Поднимите потолок или уберите его.'
       : '<b>Каналы не берут этот бюджет.</b> Измените срок, набор каналов или сумму.';
     body.innerHTML = `<div class="verdict alert">${head}</div>${whyShort(p)}`;
@@ -864,18 +872,19 @@ function renderPlan(p) {
   const f = p.forecast, unit = p.total_budget_rub / (p.total_kpi || 1), pr = p._promise || {mode: 'median', value: f.p50};
   const busiest = p.allocations.reduce((m, a) => a.capacity_utilization > m.capacity_utilization ? a : m, p.allocations[0]);
   const cautious = pr.mode === 'cautious';
+  // недобор бюджета нужен и плитке, и плашке ниже
+  const shortGap = b.budget_rub ? b.budget_rub - p.total_budget_rub : 0;
   const tiles = [
     ['Прогноз', fmt(f.p50), `${plural(f.p50, p.kpi_name)} · ${priceWord(p.kpi_name)} ${fmt(unit, unit < 10 ? 2 : 0)} ₽` + (cautious ? (p._base ? ` · план с запасом ${pct(p.corridor_rel,0)} к цели ${fmt(pr.value)}` : '') : ` · обещаем ${fmt(f.p50)}, при обычном разбросе не меньше ${fmt(f.p10)}`), ''],
     ...(cautious ? [['Обещаем', kpiN(pr.value, p.kpi_name), p._base ? (p._reserveOk ? 'цель внутри разброса даже по нижней границе' : 'резерв покрывает почти весь разброс') : `с запасом ${pct(p.corridor_rel,0)}: нижняя граница разброса`, 'accent']] : []),
     ['Разброс прогноза', fmt(f.p10) + '–' + fmt(f.p90), `±${pct(p.corridor_rel,0)} — так отличаются похожие кампании друг от друга<span class="tech"> · одна σ из ширины диапазонов каталога</span>`, '', 'Прогноз — середина; половина похожих кампаний ляжет ближе к ней, остальные — в этих границах. Так отличаются рынки, а не ошибка расчёта'],
-    ['Бюджет', rub(p.total_budget_rub), b.budget_rub ? 'задан брифом' : p._base ? `с резервом: +${rub(p.total_budget_rub - p._base.total_budget_rub)} (${spct(p.total_budget_rub / p._base.total_budget_rub - 1)}) за запас ${pct(p.corridor_rel,0)}; без запаса ${rub(p._base.total_budget_rub)}${busiest.capacity_utilization >= 0.95 ? `. Дорого, потому что дешёвые каналы выкуплены: «${esc(busiest.display_name)}» на ${pct(busiest.capacity_utilization,0)}` : ''}` : 'по медиане: цели хватит в половине случаев', ''],
+    ['Бюджет', rub(p.total_budget_rub), b.budget_rub ? (shortGap > 1 ? `размещено из ${rub(b.budget_rub)}, заданных брифом` : 'задан брифом') : p._base ? `с резервом: +${rub(p.total_budget_rub - p._base.total_budget_rub)} (${spct(p.total_budget_rub / p._base.total_budget_rub - 1)}) за запас ${pct(p.corridor_rel,0)}; без запаса ${rub(p._base.total_budget_rub)}${busiest.capacity_utilization >= 0.95 ? `. Дорого, потому что дешёвые каналы выкуплены: «${esc(busiest.display_name)}» на ${pct(busiest.capacity_utilization,0)}` : ''}` : 'по медиане: цели хватит в половине случаев', ''],
     ['Самый загруженный канал', pct(busiest.capacity_utilization, 0), esc(busiest.display_name) + ' — доля выкупленной аудитории', (busiest.capacity_utilization >= 0.95 ? 'accent ' : '') + 'tech'],
   ];
   stage('plan', p.approved_version ? `утверждён · ${kpiN(f.p50, p.kpi_name)}` : `прогноз ${kpiN(f.p50, p.kpi_name)} · не утверждён`, p.approved_version ? 'done' : '');
   const applied = p._applied ? `<div class="verdict note"><b>Применён вариант ${p._applied.n}: ${esc(ru(p._applied.description))}.</b> Бриф изменён — теперь ${p._applied.field === 'channel_ids' ? `каналов: ${b.channel_ids.length}, набор виден на шаге «01 Бриф»` : p._applied.field === 'horizon_days' ? `срок ${days(b.horizon_days)}` : p._applied.field === 'max_cpa_rub' ? (b.max_cpa_rub ? `потолок цены ${fmt(b.max_cpa_rub, b.max_cpa_rub < 10 ? 2 : 0)} ₽` : 'потолок цены снят') : `цель ${kpiN(b.target_value, p.kpi_name)}`}.</div>` : '';
   // плашка только когда недобор значим и планировщик назвал причину: на шаге наливания
   // остаётся до сотни рублей, и тревожить этим человека нечем
-  const shortGap = b.budget_rub ? b.budget_rub - p.total_budget_rub : 0;
   const short = shortGap > Math.max(1000, b.budget_rub * 0.005) && (p.shortfall || []).length
     ? `<div class="verdict note"><b>Бюджет размещён не весь: ${rub(p.total_budget_rub)} из ${rub(b.budget_rub)}.</b>${whyShort(p, true)}</div>` : '';
   body.innerHTML = `${applied}${short}${p._reserveNote ? `<div class="verdict note">${p._reserveNote}</div>` : ''}
@@ -923,7 +932,7 @@ function renderPeriods(p) {
     <div class="scroll"><table class="table"><thead><tr><th>Период</th><th>Бюджет, ₽</th><th>${h2('Бюджет', 'накопит.')}</th><th>${cap(K.nomPl)} накопит.</th><th>${h2('Доля', 'плана')}</th></tr></thead><tbody>${
       rows.map(r => `<tr><td>${label(r)}</td><td>${fmt(r.budget_rub)}</td><td>${fmt(r.cum_budget_rub)}</td><td>${fmt(r.cum_kpi)}</td><td>${pct(r.cum_kpi / (p.total_kpi || 1), 0)}</td></tr>`).join('')
     }</tbody></table></div>
-    <p class="muted" style="margin-top:12px;max-width:760px">Бюджет канала разложен по дням пропорционально спросу, поэтому недели отличаются и составом дней, и длиной хвоста: в последней неделе остаётся ${rows.length && byWeek ? days(p.series.days.length - (p.series.weeks.length - 1) * 7) : days(p.brief.horizon_days)} из семи. Накопление результата идёт быстрее в начале: дешёвые каналы выкупаются первыми.</p>`;
+    <p class="muted" style="margin-top:12px;max-width:760px">Бюджет канала разложен по дням пропорционально спросу дня, поэтому дни внутри недели отличаются.${byWeek && p.series.days.length % 7 ? ` В последней неделе ${days(p.series.days.length - (p.series.weeks.length - 1) * 7)} из семи, поэтому она короче остальных.` : ''} Накопление результата идёт быстрее в начале: дешёвые каналы выкупаются первыми.</p>`;
   box.querySelectorAll('#periods-seg button').forEach(b => b.onclick = () => { VIEW.periods = b.dataset.p; renderPeriods(p); });
   fixHeaders(box);
 }
@@ -1113,7 +1122,7 @@ function renderPlanTable(p) {
   const nDays = p.brief.horizon_days, channels = p.allocations.map(a => a.channel_id);
   const cal = {}; for (const c of p.calendar) (cal[c.channel_id] ||= {})[c.day] = c.budget_rub;
   const calBox = $('#plan-calendar'); calBox.hidden = !VIEW.calendar;
-  if (VIEW.calendar) calBox.innerHTML = `<h4 style="margin:24px 0 12px">Календарь, тыс. ₽ в день</h4><div class="scroll"><table class="table" style="font-size:13px"><thead><tr><th>Канал</th>${Array.from({length: nDays}, (_, i) => `<th>${i+1}${dayDate(i+1) ? `<br><small>${dayDate(i+1)}</small>` : ''}</th>`).join('')}</tr></thead><tbody>${channels.map(c => `<tr><td>${esc(nm(c))}</td>${Array.from({length: nDays}, (_, i) => `<td>${fmt((cal[c]||{})[i+1]/1000, 1)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="muted" style="margin-top:12px">Бюджет каждого канала разложен по дням пропорционально спросу дня, внутри дня — по часам активности; тише всего выходные.<span class="tech"> Профиль недели планировщик оценивает по ретро-наблюдениям, скрытых параметров мира он не видит.</span></p>`;
+  if (VIEW.calendar) calBox.innerHTML = `<h4 style="margin:24px 0 12px">Календарь, тыс. ₽ в день</h4><div class="scroll"><table class="table" style="font-size:13px"><thead><tr><th>Канал</th>${Array.from({length: nDays}, (_, i) => `<th>${i+1}${dayDate(i+1) ? `<br><small>${dayDate(i+1)}</small>` : ''}</th>`).join('')}</tr></thead><tbody>${channels.map(c => `<tr><td>${esc(nm(c))}</td>${Array.from({length: nDays}, (_, i) => `<td>${fmt((cal[c]||{})[i+1]/1000, 1)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="muted" style="margin-top:12px">Бюджет каждого канала разложен по дням пропорционально спросу дня, внутри дня — по часам активности.<span class="tech"> Профиль недели планировщик оценивает по ретро-наблюдениям; неделя в модели отсчитывается от первого дня кампании, а не от календарного понедельника, поэтому тихие сутки приходятся на шестой и седьмой день кампании.</span></p>`;
   fixHeaders($('#plan-body'));
 }
 
@@ -1189,21 +1198,19 @@ function updateRunCaption() {
 }
 
 function applySuggestion(s, n) {
+  // ход посчитан для той цели, что была в брифе на момент расчёта: применять его к другой
+  // цели нельзя — «снизить цель до 1 280 конверсий» превращалось в 1 280 кликов
+  const kpiNow = FORM.mode === 'A' ? ($('#objective').value === 'max_conversions' ? 'conversions' : 'other') : $('#target_kpi').value;
+  if (PLAN && kpiNow !== PLAN.kpi_name) {
+    FORM.applied = null;
+    $('#brief-note').innerHTML = `<span class="err">Ход посчитан для цели «${esc(plural(2, PLAN.kpi_name))}», а в брифе теперь другая. Верните цель и примените ход снова.</span>`;
+    showScreen('brief');
+    return;
+  }
   FORM.applied = {n, description: s.description, field: s.changed_field};
   if (s.changed_field === 'horizon_days') { if (s.suggested_value > +$('#horizon').max) { $('#brief-note').innerHTML = `<span class="err">${esc(s.why_not || 'срок длиннее лимита стенда')}</span>`; showScreen('brief'); return; } $('#horizon').value = s.suggested_value; }
   if (s.changed_field === 'target_value') setMoney('target_value', Math.round(s.suggested_value));
-  if (s.changed_field === 'max_cpa_rub') {
-    // потолок живёт только у цели «конверсии»: если KPI брифа сменили после расчёта,
-    // syncCpa() очистил бы поле, и ход применился бы вхолостую
-    const kpiNow = FORM.mode === 'A' ? ($('#objective').value === 'max_conversions' ? 'conversions' : 'other') : $('#target_kpi').value;
-    if (PLAN && kpiNow !== PLAN.kpi_name) {
-      FORM.applied = null;
-      $('#brief-note').innerHTML = `<span class="err">Ход относится к цели «${esc(plural(2, PLAN.kpi_name))}», а в брифе теперь другая. Верните цель и примените ход снова.</span>`;
-      showScreen('brief');
-      return;
-    }
-    setMoney('max_cpa', s.suggested_value === null ? '' : Math.round(s.suggested_value * 100) / 100);
-  }
+  if (s.changed_field === 'max_cpa_rub') setMoney('max_cpa', s.suggested_value === null ? '' : Math.round(s.suggested_value * 100) / 100);
   if (s.changed_field === 'channel_ids') setChannels(s.suggested_value);
   makePlan();
 }
