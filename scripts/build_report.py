@@ -68,17 +68,49 @@ def section(text: str, title: str, level: int = 2) -> str:
     return rest[: end.start()].strip() if end else rest.strip()
 
 
+REPO = "https://github.com/dmagog/mediaplan-optimizer/blob/main/"
+
+
+def _data_uri(src: str) -> str | None:
+    path = ROOT / src
+    if not path.exists():
+        return None
+    mime = {".png": "image/png", ".gif": "image/gif", ".svg": "image/svg+xml"}.get(path.suffix, "image/png")
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+
+
 def inline_images(md: str) -> str:
-    """Картинки вшиваем в файл: отчёт должен открываться одним файлом."""
+    """Картинки вшиваем в файл: отчёт должен открываться одним файлом.
+
+    Разметка в README двух видов: markdown `![…](…)` и тег `<img src=…>` в таблице
+    сравнения кабинетов. Вшивать надо оба — иначе две картинки из пяти открываются
+    битыми, а отчёт обещает, что папка с ресурсами не нужна.
+    """
+    def markdown(m: re.Match[str]) -> str:
+        uri = _data_uri(m.group(2))
+        return m.group(0) if uri is None else f"![{m.group(1)}]({uri})"
+
+    def tag(m: re.Match[str]) -> str:
+        uri = _data_uri(m.group(2))
+        return m.group(0) if uri is None else f'{m.group(1)}"{uri}"'
+
+    md = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", markdown, md)
+    return re.sub(r'(<img [^>]*src=)"([^"]+)"', tag, md)
+
+
+def absolute_links(md: str) -> str:
+    """Ссылки на файлы репозитория — абсолютные: отчёт лежит в report/ и уезжает по почте.
+
+    Относительный `docs/report.md` из README внутри отчёта указывал бы на
+    `report/docs/report.md`, то есть в никуда.
+    """
     def repl(m: re.Match[str]) -> str:
-        alt, src = m.group(1), m.group(2)
-        path = ROOT / src
-        if not path.exists():
+        text, href = m.group(1), m.group(2)
+        if href.startswith(("http", "#", "data:", "mailto:")):
             return m.group(0)
-        mime = {".png": "image/png", ".gif": "image/gif", ".svg": "image/svg+xml"}.get(path.suffix, "image/png")
-        data = base64.b64encode(path.read_bytes()).decode()
-        return f"![{alt}](data:{mime};base64,{data})"
-    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", repl, md)
+        return f"[{text}]({REPO}{href.lstrip('./')})"
+
+    return re.sub(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)", repl, md)
 
 
 def compose() -> str:
@@ -148,7 +180,7 @@ def compose() -> str:
 
 def build() -> None:
     md = MarkdownIt("commonmark").enable(["table", "strikethrough"])
-    body = md.render(inline_images(compose()))
+    body = md.render(inline_images(absolute_links(compose())))
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

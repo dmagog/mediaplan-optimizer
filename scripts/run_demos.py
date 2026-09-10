@@ -171,12 +171,19 @@ def main() -> None:
     else:
         comparison = {}
         report += [f"## Стенд: {args.seeds} парных миров, четыре стратегии", ""]
+        stand_started = time.perf_counter()
         for scenario in args.scenarios.split(","):
             stats = compare_strategies(demo1, catalog, curves, scenario_id=scenario, seeds=args.seeds)
             comparison[scenario] = {name: st.to_dict() for name, st in stats.items()}
+        # время самого стенда живёт в артефакте: иначе при переиспользовании отчёт
+        # печатал время короткого прогона демонстраций и врал про полчаса расчёта
+        comparison["__stand__"] = {"seeds": args.seeds, "seconds": round(time.perf_counter() - stand_started)}
         saved.write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    stand = comparison.get("__stand__", {})
     for scenario, strategies in comparison.items():
+        if scenario.startswith("__"):
+            continue
         report += [f"### Сценарий {scenario}", "", "```", _summary_table(strategies), "```", ""]
         adaptive, static = strategies["adaptive"], strategies["static"]
         dev_a = np.array([r["final_deviation_kpi"] for r in adaptive["per_run"]])
@@ -197,7 +204,13 @@ def main() -> None:
         report.append("")
         _histogram(dev_a, dev_s, scenario, seeds, Path(args.figures), threshold)
 
-    report.append(f"Время стенда: {time.perf_counter() - started:.0f} с.")
+    if stand:
+        report.append(
+            f"Стенд считался {stand['seconds'] / 60:.0f} мин на {stand['seeds']} мирах; "
+            f"демонстрации и сборка отчёта — {time.perf_counter() - started:.0f} с."
+        )
+    else:
+        report.append(f"Время стенда: {time.perf_counter() - started:.0f} с.")
     (RESULTS / "report.md").write_text("\n".join(report), encoding="utf-8")
     print("\n".join(report))
 

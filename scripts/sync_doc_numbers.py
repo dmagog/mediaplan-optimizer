@@ -48,7 +48,7 @@ def _norm(text: str) -> str:
 def _scenario_rows(comparison: dict) -> dict[str, str]:
     rows = {}
     for label, key in SCENARIOS.items():
-        s = comparison[key]
+        s = comparison[key]  # служебные ключи вида __stand__ здесь не запрашиваются
         dev = {name: np.array([r["final_deviation_kpi"] for r in s[name]["per_run"]]) for name in ("static", "adaptive")}
         cells = []
         for name in ("static", "adaptive"):
