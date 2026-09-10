@@ -92,9 +92,13 @@ def main() -> None:
         }
 
     RESULTS.mkdir(exist_ok=True)
-    (RESULTS / "modes_100.json").write_text(json.dumps({scenarios[0]: modes[scenarios[0]]}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    (RESULTS / "maxmode_100.json").write_text(json.dumps(maxmode, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    print("готово: results/modes_100.json, results/maxmode_100.json")
+    # число миров в имени файла: README и docs/business_position.md цитируют его как
+    # «100 миров», и прогон на двадцати не должен молча подменять эти таблицы
+    first = {scenarios[0]: modes[scenarios[0]], "seeds": args.seeds}
+    (RESULTS / f"modes_{args.seeds}.json").write_text(json.dumps(first, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    maxmode["seeds"] = args.seeds
+    (RESULTS / f"maxmode_{args.seeds}.json").write_text(json.dumps(maxmode, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"готово: results/modes_{args.seeds}.json, results/maxmode_{args.seeds}.json")
 
 
 if __name__ == "__main__":
