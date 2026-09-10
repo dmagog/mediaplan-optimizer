@@ -21,7 +21,7 @@ class HiddenChannelParams:
     channel_id: str
     family: ChannelFamily
     daily_requests: float  # средний дневной инвентарь (контактов в сутки)
-    hourly_profile: np.ndarray  # 168 долей, сумма внутри каждых суток = 1
+    hourly_profile: np.ndarray  # 168 долей, сумма за неделю = 7: средние сутки весят единицу
     ecpm_base: float  # медиана цены тысячи показов
     price_sigma: float  # разброс лог-нормального ландшафта цены
     base_ctr: float
@@ -46,15 +46,20 @@ def _draw_near_range(rng: np.random.Generator, lo: float, hi: float, outside: fl
 
 
 def _hourly_profile(rng: np.random.Generator, assumptions: dict) -> np.ndarray:
-    """Двугорбый суточный профиль с утренним и вечерним пиками, выходные мягче.
+    """Двугорбый суточный профиль с утренним и вечерним пиками, выходные тише.
 
     Форма из практики медиапланирования (config/assumptions.yaml, hourly_demand);
-    амплитуда выбирается из диапазона и скрыта от планировщика.
+    амплитуда выбирается из диапазона и скрыта от планировщика. Выходной день
+    отличается и формой (пик сдвинут), и объёмом (`weekend_volume_ratio`).
     """
     peak_lo, peak_hi = range_of(assumptions["hourly_demand"]["weekday_peak_ratio"])
     trough_lo, trough_hi = range_of(assumptions["hourly_demand"]["night_trough_ratio"])
+    weekend_lo, weekend_hi = range_of(assumptions["hourly_demand"]["weekend_volume_ratio"])
     peak = rng.uniform(peak_lo, peak_hi)
     trough = rng.uniform(trough_lo, trough_hi)
+    # Отдельный поток случайности: обычный вызов rng сдвинул бы все следующие розыгрыши,
+    # и мир того же зерна стал бы другим — сравнивать прогоны между версиями было бы нечем
+    weekend_ratio = rng.spawn(1)[0].uniform(weekend_lo, weekend_hi)
     hours = np.arange(24)
     morning = np.exp(-((hours - 10) ** 2) / (2 * 2.5**2))
     evening = np.exp(-((hours - 20) ** 2) / (2 * 2.5**2))
@@ -62,12 +67,15 @@ def _hourly_profile(rng: np.random.Generator, assumptions: dict) -> np.ndarray:
     profile = np.empty(HOURS_IN_WEEK)
     for day in range(7):
         weekend = day >= 5
-        daily = shape * (0.85 if weekend else 1.0)
+        daily = shape * (weekend_ratio if weekend else 1.0)
         if weekend:
             # в выходные утренний пик сдвигается позже и сглаживается
             daily = np.roll(daily, 1)
-        profile[day * 24 : (day + 1) * 24] = daily / daily.sum()
-    return profile
+        profile[day * 24 : (day + 1) * 24] = daily
+    # Нормируем неделю целиком, а не каждые сутки: иначе множитель выходных сокращается
+    # сам с собой и все дни выходят одинаковыми по объёму. Средние сутки по-прежнему
+    # весят единицу, поэтому недельный объём канала не меняется — меняется его форма.
+    return profile / profile.sum() * 7
 
 
 def draw_hidden_params(catalog: PublicCatalog, world_seed: int) -> dict[str, HiddenChannelParams]:

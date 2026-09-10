@@ -41,7 +41,7 @@ class ResponseCurve:
     points: list[CurvePoint]
     ctr: float
     cvr: float
-    hourly_profile: np.ndarray  # 168 долей, внутри суток сумма 1
+    hourly_profile: np.ndarray  # 168 долей, сумма за неделю = 7: средние сутки весят единицу
     reach_per_impression: float  # доля новых уникальных на показ при малой частоте
     max_daily_spend: float
     max_daily_impressions: float
@@ -112,7 +112,17 @@ def _daily_aggregates(history: RetroHistory, channel_id: str) -> list[CurvePoint
 
 
 def _hourly_profile(history: RetroHistory, channel_id: str) -> np.ndarray:
-    """Профиль по часам недели из наблюдаемых запросов, нормирован внутри суток."""
+    """Профиль по часам недели из наблюдаемых запросов; средние сутки весят единицу.
+
+    Нормируем по неделе, а не по каждым суткам: спрос буднего дня и выходного
+    отличается, и планировщику это видно из ретро-наблюдений. Сумма профиля за
+    неделю равна семи, поэтому «доля часа в сутках» остаётся прежней величиной,
+    а сумма по конкретным суткам говорит, насколько этот день тише или громче.
+
+    Усадку веса к средним суткам пробовали и отказались: против истинных весов мира
+    она не выигрывает (замер в docs/decisions.md), а спрос выходного дня — настоящий
+    сигнал, а не шум ретро.
+    """
     sums = np.zeros(HOURS_IN_WEEK)
     counts = np.zeros(HOURS_IN_WEEK)
     for episode in history.episodes:
@@ -121,12 +131,10 @@ def _hourly_profile(history: RetroHistory, channel_id: str) -> np.ndarray:
             sums[hour] += obs.by_channel[channel_id].requests
             counts[hour] += 1
     mean = np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
-    profile = np.empty(HOURS_IN_WEEK)
-    for day in range(7):
-        block = mean[day * 24 : (day + 1) * 24]
-        total = block.sum()
-        profile[day * 24 : (day + 1) * 24] = block / total if total > 0 else np.full(24, 1 / 24)
-    return profile
+    total = mean.sum()
+    if total <= 0:
+        return np.full(HOURS_IN_WEEK, 1 / 24)
+    return mean / total * 7
 
 
 def _concave_hull(points: list[CurvePoint]) -> list[CurvePoint]:

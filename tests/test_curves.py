@@ -1,5 +1,7 @@
 """Кривые из ретро-истории: вогнутость, потолок, сглаживание ставок."""
 
+import numpy as np
+
 from brain.curves import build_curve
 
 
@@ -39,7 +41,30 @@ def test_rates_are_prior_smoothed(catalog, history):
         assert lo * 0.5 <= curve.cvr <= hi * 1.5, channel.channel_id
 
 
-def test_hourly_profile_normalised_per_day(curves):
+def test_hourly_profile_normalised_per_week(curves):
+    """Профиль нормирован по неделе: средние сутки весят единицу, а тихий день — меньше."""
     for curve in curves.values():
+        assert abs(curve.hourly_profile.sum() - 7.0) < 1e-6
         for day in range(7):
-            assert abs(curve.hourly_profile[day * 24 : (day + 1) * 24].sum() - 1.0) < 1e-6
+            weight = curve.hourly_profile[day * 24 : (day + 1) * 24].sum()
+            assert 0.5 < weight < 1.5
+
+
+def test_day_weights_come_from_retro_as_is(catalog, history):
+    """Вес дня — ровно то, что видно в ретро: усадку к средним суткам мы замерили и отвергли."""
+    from brain.curves import HOURS_IN_WEEK
+
+    channel_id = catalog.channel_ids[0]
+    sums = np.zeros(HOURS_IN_WEEK)
+    counts = np.zeros(HOURS_IN_WEEK)
+    for episode in history.episodes:
+        for obs in episode.observations:
+            hour = (obs.hour - 1) % HOURS_IN_WEEK
+            sums[hour] += obs.by_channel[channel_id].requests
+            counts[hour] += 1
+    mean = np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
+    raw = (mean / mean.sum() * 7).reshape(7, 24).sum(axis=1)
+
+    profile = build_curve(history, catalog.by_id(channel_id)).hourly_profile
+    weights = profile.reshape(7, 24).sum(axis=1)
+    assert np.allclose(weights, raw)
