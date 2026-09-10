@@ -16,6 +16,8 @@ import numpy as np
 from brain.assumptions import campaign_audience_multiplier, fatigue_delta, video_vtr
 from brain.config import (
     BUDGET_BISECTION_ITERATIONS,
+    CAP_SEARCH_GROWTH,
+    CAP_SEARCH_STEPS,
     CORRIDOR_SIGMA_DIVISOR,
     MAX_HORIZON_DAYS,
     REACHABLE_TARGET_MARGIN,
@@ -24,7 +26,7 @@ from brain.config import (
 from brain.curves import ResponseCurve
 from brain.ml import MLBundle, ReachModel
 from brain.planner.allocator import AllocationResult, ChannelModel, allocate, build_models
-from brain.texts import kpi_label, num
+from brain.texts import days_word, kpi_label, kpi_unit, num, rub
 from contracts import (
     BindingConstraint,
     Brief,
@@ -122,6 +124,36 @@ def _min_budget_for(models, target: float, kpi: str, locked, max_cpa, reach_mode
     return hi
 
 
+def _cap_that_reaches(models, brief: Brief, target: float, kpi: str, reach_model) -> tuple[float, float] | None:
+    """Потолок средней цены, при котором цель снова достижима, и бюджет такого плана.
+
+    Наливание идёт по предельной отдаче и останавливается, когда средняя цена
+    порции перевалила за потолок, поэтому расчётная цена плана под цель — нижняя
+    граница искомого потолка. Фиксации каналов в брифе наливаются первыми и
+    среднюю цену сдвигают, так что найденное значение проверяем и подращиваем.
+    """
+    budget = _min_budget_for(models, target, kpi, brief.locked, None, reach_model)
+    cap = budget / target
+    for _ in range(CAP_SEARCH_STEPS):
+        if _total_kpi(models, _max_budget(models), kpi, brief.locked, cap, reach_model) >= target:
+            return cap, _min_budget_for(models, target, kpi, brief.locked, cap, reach_model)
+        cap *= CAP_SEARCH_GROWTH
+    return None
+
+
+def _lower_target_suggestion(models, brief: Brief, max_kpi: float, kpi: str, reach_model) -> BriefSuggestion:
+    """Ход «снизить цель»: 95 % достижимого максимума, чтобы цель не висела на потолке."""
+    reachable = max_kpi * REACHABLE_TARGET_MARGIN
+    budget = _min_budget_for(models, reachable, kpi, brief.locked, brief.max_cpa_rub, reach_model)
+    return BriefSuggestion(
+        description=f"Снизить цель до {num(reachable)} {kpi_label(kpi)} при тех же каналах и сроке",
+        changed_field="target_value",
+        suggested_value=float(round(reachable)),
+        expected_kpi=float(reachable),
+        expected_budget_rub=float(budget),
+    )
+
+
 def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models, kpi: str) -> Infeasibility | None:
     target = brief.target_value
     assert target is not None
@@ -130,35 +162,73 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         return None
 
     suggestions: list[BriefSuggestion] = []
-    # 1. увеличить срок: минимальный горизонт, при котором цель достижима
-    min_days = None
-    for days in range(brief.horizon_days + 1, MAX_HORIZON_DAYS + 1):
-        m = ctx.models(days)
-        if _total_kpi(m, _max_budget(m), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model) >= target:
-            min_days = days
-            budget = _min_budget_for(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
-            suggestions.append(
-                BriefSuggestion(
-                    description=f"Увеличить срок до {days} дней",
-                    changed_field="horizon_days",
-                    suggested_value=days,
-                    expected_kpi=float(target),
-                    expected_budget_rub=float(budget),
+    # 0. потолок средней цены: если без него цель достижима, связывает именно он.
+    # Ёмкость и срок тут ни при чём, и предлагать надо поднять потолок, а не двигать бриф.
+    if brief.max_cpa_rub is not None:
+        free_max = _total_kpi(models, _max_budget(models), kpi, brief.locked, None, ctx.reach_model)
+        if free_max >= target:
+            found = _cap_that_reaches(models, brief, target, kpi, ctx.reach_model)
+            if found is not None:
+                cap, budget = found
+                suggestions.append(
+                    BriefSuggestion(
+                        description=f"Поднять потолок средней цены до {rub(cap)} за {kpi_unit(kpi)}",
+                        changed_field="max_cpa_rub",
+                        suggested_value=float(round(cap)),
+                        expected_kpi=float(target),
+                        expected_budget_rub=float(budget),
+                    )
                 )
+                suggestions.append(_lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model))
+                return Infeasibility(
+                    binding_constraint=BindingConstraint.ECONOMICS,
+                    explanation=(
+                        f"Ёмкости каналов хватает, но потолок средней цены {rub(brief.max_cpa_rub)} "
+                        f"пропускает только {num(max_kpi)} {kpi_label(kpi)}; без потолка достижимо "
+                        f"{num(free_max)}, цель {num(target)} — при потолке от {rub(cap)}."
+                    ),
+                    max_achievable=max_kpi,
+                    suggestions=suggestions,
+                )
+    # 1. увеличить срок: минимальный горизонт, при котором цель достижима.
+    # Ищем двоичным поиском, а не перебором день за днём: максимум достижимого растёт
+    # с горизонтом (ёмкость каналов складывается по дням), поэтому достаточно проверить
+    # логарифм от диапазона. Перебор до 90 дней стоил 7–32 секунды: каждый шаг заново
+    # собирает модели каналов, и дорожает это с длиной горизонта.
+    cache: dict[int, dict[str, ChannelModel]] = {}
+
+    def models_for(days: int) -> dict[str, ChannelModel]:
+        if days not in cache:
+            cache[days] = ctx.models(days)
+        return cache[days]
+
+    def reaches(days: int) -> bool:
+        m = models_for(days)
+        return _total_kpi(m, _max_budget(m), kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model) >= target
+
+    min_days = None
+    low, high = brief.horizon_days + 1, MAX_HORIZON_DAYS
+    if low <= high and reaches(high):
+        while low < high:
+            mid = (low + high) // 2
+            if reaches(mid):
+                high = mid
+            else:
+                low = mid + 1
+        min_days = low
+        m = models_for(min_days)
+        budget = _min_budget_for(m, target, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
+        suggestions.append(
+            BriefSuggestion(
+                description=f"Увеличить срок до {min_days} {days_word(min_days)}",
+                changed_field="horizon_days",
+                suggested_value=min_days,
+                expected_kpi=float(target),
+                expected_budget_rub=float(budget),
             )
-            break
-    # 2. снизить цель до достижимого максимума с запасом 5 %
-    reachable = max_kpi * REACHABLE_TARGET_MARGIN
-    budget_for_reachable = _min_budget_for(models, reachable, kpi, brief.locked, brief.max_cpa_rub, ctx.reach_model)
-    suggestions.append(
-        BriefSuggestion(
-            description=f"Снизить цель до {num(reachable)} {kpi_label(kpi)} при тех же каналах и сроке",
-            changed_field="target_value",
-            suggested_value=float(round(reachable)),
-            expected_kpi=float(reachable),
-            expected_budget_rub=float(budget_for_reachable),
         )
-    )
+    # 2. снизить цель до достижимого максимума с запасом 5 %
+    suggestions.append(_lower_target_suggestion(models, brief, max_kpi, kpi, ctx.reach_model))
     # 3. добавить каналы, которых нет в пресете
     extra = [cid for cid in catalog.channel_ids if cid not in brief.channel_ids and cid in ctx.curves]
     if extra:
@@ -178,7 +248,7 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
             )
             constraint = BindingConstraint.CHANNEL_SET
             explanation = (
-                f"При выбранных каналах максимум за {brief.horizon_days} дней "
+                f"При выбранных каналах максимум за {brief.horizon_days} {days_word(brief.horizon_days)} "
                 f"{num(max_kpi)} {kpi_label(kpi)}; с добавлением {', '.join(extra)} цель достижима."
             )
             return Infeasibility(
@@ -188,18 +258,66 @@ def _diagnose(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
     if min_days is not None:
         constraint = BindingConstraint.HORIZON
         explanation = (
-            f"Ёмкости каналов хватает, но не за {brief.horizon_days} дней: потолок "
-            f"{num(max_kpi)} {kpi_label(kpi)}; цель достижима минимум за {min_days} дней."
+            f"Ёмкости каналов хватает, но не за {brief.horizon_days} {days_word(brief.horizon_days)}: потолок "
+            f"{num(max_kpi)} {kpi_label(kpi)}; цель достижима минимум за {min_days} {days_word(min_days)}."
         )
     else:
         constraint = BindingConstraint.CAPACITY
         explanation = (
             f"Суммарная ёмкость выбранных каналов даёт не более {num(max_kpi)} {kpi_label(kpi)} "
-            f"даже при максимальном выкупе; цель {target:,.0f} недостижима."
+            f"даже при максимальном выкупе; цель {num(target)} недостижима."
         )
     return Infeasibility(
         binding_constraint=constraint, explanation=explanation, max_achievable=max_kpi, suggestions=suggestions
     )
+
+
+def _shortfall_notes(brief: Brief, ctx: PlanningContext, models, result: AllocationResult, kpi: str) -> list[str]:
+    """Почему бюджет размещён не весь: потолок цены или ёмкость каналов, и что делать.
+
+    Тип A не проходит через диагноз недостижимости — бриф с бюджетом всегда даёт
+    план, — поэтому раньше человек видел только строку «упёрлись в потолок или в
+    лимит цены» и сам гадал, во что именно. Считаем это тем же способом, что и
+    диагноз типа B: перекладываем без потолка цены и смотрим на разницу.
+    """
+    assert brief.budget_rub is not None
+    placed = sum(result.budgets.values())
+    notes = [f"размещено {rub(placed)} из {rub(brief.budget_rub)}"]
+
+    if brief.max_cpa_rub is not None:
+        free = allocate(
+            models, brief.budget_rub, kpi, brief.locked, None,
+            steps=TYPE_B_BISECTION_STEPS, reach_model=ctx.reach_model,
+        )
+        free_placed = sum(free.budgets.values())
+        if free_placed > placed + 1.0:
+            free_kpi = sum(models[cid].value(b, kpi) for cid, b in free.budgets.items())
+            notes.append(
+                f"потолок средней цены {rub(brief.max_cpa_rub)} за {kpi_unit(kpi)} не пропустил "
+                f"{rub(free_placed - placed)}: без него разместилось бы {rub(free_placed)} "
+                f"и прогноз вырос бы до {num(free_kpi)} {kpi_label(kpi)}"
+            )
+            if placed <= 0:
+                notes.append("ни один канал не проходит потолок: поднимите его или снимите")
+            return notes
+
+    ceiling = _max_budget(models)
+    notes.append(
+        f"ёмкость каналов за {brief.horizon_days} {days_word(brief.horizon_days)} принимает не больше {rub(ceiling)}: "
+        "деньги сверх этого мир просто не выкупит"
+    )
+    low, high = brief.horizon_days + 1, MAX_HORIZON_DAYS
+    if low <= high and _max_budget(ctx.models(high)) >= brief.budget_rub:
+        while low < high:
+            mid = (low + high) // 2
+            if _max_budget(ctx.models(mid)) >= brief.budget_rub:
+                high = mid
+            else:
+                low = mid + 1
+        notes.append(f"весь бюджет разместился бы за {low} {days_word(low)} или на более широком наборе каналов")
+    else:
+        notes.append("даже за максимальный срок брифа этот набор каналов столько не выкупит: нужны ещё каналы")
+    return notes
 
 
 # --------------------------------------------------------------- сборка
@@ -222,10 +340,15 @@ def _assemble(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         channel = catalog.by_id(cid)
         b = result.budgets[cid]
         out = model.outcome(b)
-        daily = b / days
+        # бюджет по дням — пропорционально спросу дня, а не поровну: в тихий день
+        # столько же денег некуда девать, в громкий их не хватает
+        daily_budget = model.daily_budgets(b)
         hourly_spend = np.array(
-            [daily * ctx.curves[cid].hourly_share(h) for h in range(hours)]
-        )  # профиль нормирован внутри суток, сумма по дню = daily
+            [
+                daily_budget[h // 24] * ctx.curves[cid].hourly_share(h) / max(model.day_weights[h // 24], 1e-9)
+                for h in range(hours)
+            ]
+        )  # доля часа внутри своих суток: вес дня уже учтён в daily_budget
         cum_spend = np.cumsum(hourly_spend)
         per_channel_cum_spend[cid] = cum_spend
         cum["spend"] += cum_spend
@@ -245,7 +368,7 @@ def _assemble(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
         for h in range(hours):
             hourly_caps[h][cid] = float(hourly_spend[h])
         for day in range(1, days + 1):
-            calendar.append(CalendarCell(day=day, channel_id=cid, budget_rub=float(daily)))
+            calendar.append(CalendarCell(day=day, channel_id=cid, budget_rub=float(daily_budget[day - 1])))
 
         spend_eff = out.spend if out.spend > 0 else b
         marginal = result.marginal_cost_per_kpi.get(cid)
@@ -318,9 +441,10 @@ def _assemble(brief: Brief, catalog: PublicCatalog, ctx: PlanningContext, models
     if brief.ml.response_curves:
         explanation.append("ML: распределение использует обученные кривые показов, кликов и конверсий по бюджету.")
     if result.unspent > 0:
-        explanation.append(
-            f"не распределено {result.unspent:,.0f} ₽: все каналы упёрлись в потолок или в лимит цены"
-        )
+        if brief.is_budget_constrained:
+            explanation.extend(_shortfall_notes(brief, ctx, models, result, kpi))
+        else:
+            explanation.append(f"не распределено {rub(result.unspent)}: каналы упёрлись в потолок ёмкости или цены")
     return MediaPlan(
         plan_id=_plan_id(brief, catalog) + (f"-{ctx.ml_model_id[:8]}" if ctx.ml_model_id else ""),
         ml_model_id=ctx.ml_model_id,

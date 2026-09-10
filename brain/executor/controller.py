@@ -544,7 +544,10 @@ class AdaptiveExecutor(BaseExecutor):
         for cid in self.channel_ids:
             total_pool = self.catalog.by_id(cid).capacity_mid * campaign_audience_multiplier()
             pools[cid] = max(total_pool - self.estimates[cid].cum_reach, total_pool * POOL_FLOOR_SHARE)
-        models = build_models(curves, days_left, pools, fatigue_delta(), grid_size=REPLAN_GRID_SIZE)
+        # с какого дня недели идёт остаток: иначе остаток будних дней получил бы вес выходных
+        models = build_models(
+            curves, days_left, pools, fatigue_delta(), grid_size=REPLAN_GRID_SIZE, day_offset=h // 24
+        )
         old_left = {cid: max(self.target_budget[cid] - self.fact_cum_by_channel[cid], 0.0) for cid in self.channel_ids}
         if self.hold_plan and h >= RESERVE_WARMUP_SHARE * self.horizon:
             wanted_reserve = remaining_budget - self._budget_to_use(models, remaining_budget)

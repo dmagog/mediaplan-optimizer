@@ -46,23 +46,57 @@ class ChannelModel:
     pool: float
     fatigue_delta: float
     grid_size: int = GRID_SIZE
+    day_offset: int = 0  # с какого дня недели идёт кампания: важно при перепланировании остатка
     grid_budget: np.ndarray = field(default_factory=lambda: np.zeros(1))
     grid: dict[str, np.ndarray] = field(default_factory=dict)
+    day_weights: np.ndarray = field(default_factory=lambda: np.ones(1))
 
     def __post_init__(self) -> None:
-        max_total = self.curve.max_daily_spend * self.days
+        self.day_weights = self._weights()
+        # ёмкость дня растёт вместе с его спросом, поэтому потолок кампании — по сумме весов
+        max_total = self.curve.max_daily_spend * float(self.day_weights.sum())
         self.grid_budget = np.linspace(0.0, max(max_total, 1.0), self.grid_size)
         rows = [self.simulate(b) for b in self.grid_budget]
         self.grid = {key: np.array([getattr(r, key) for r in rows]) for key in OUTCOME_KEYS}
 
+    def _weights(self) -> np.ndarray:
+        """Вес спроса каждого дня кампании: сумма долей его часов, средние сутки — единица.
+
+        Профиль по часам недели приходит из ретро-наблюдений (brain/curves.py), поэтому
+        разница будней и выходных планировщику видна, а скрытых параметров мира он не знает.
+        """
+        profile = self.curve.hourly_profile
+        weights = np.array(
+            [profile[((self.day_offset + d) * 24 + h) % len(profile)] for d in range(self.days) for h in range(24)],
+            dtype=float,
+        ).reshape(self.days, 24).sum(axis=1)
+        return np.where(weights > 0, weights, 1.0)
+
+    def daily_budgets(self, total_budget: float) -> np.ndarray:
+        """Бюджет по дням: пропорционально спросу дня, а не поровну.
+
+        При равном спросе это и есть равномерная раскладка. Конверсий такая раскладка
+        не прибавляет: выкуп однороден (вдвое больше инвентаря — вдвое больше показов
+        на ту же ставку), поэтому для вогнутой кривой равный расход на единицу спроса
+        и есть оптимум, а не приближение к нему. Смысл в том, что календарь плана и
+        часовые лимиты совпадают с тем, как кампания тратит на самом деле.
+        """
+        w = self.day_weights
+        return total_budget * w / float(w.sum())
+
     def simulate(self, total_budget: float) -> Outcome:
-        daily = total_budget / self.days
-        imps_day = self.curve.impressions_at(daily)
-        spend_day = self.curve.effective_spend(daily)
-        base_ctr, base_cvr = self.curve.rates_at(daily)
+        w = self.day_weights
+        # день веса w покупает столько же на рубль, сколько средние сутки: и спрос,
+        # и доступный инвентарь дня масштабируются одним и тем же весом
+        per_average_day = total_budget / float(w.sum())
+        imps_base = self.curve.impressions_at(per_average_day)
+        spend_base = self.curve.effective_spend(per_average_day)
+        base_ctr, base_cvr = self.curve.rates_at(per_average_day)
         cum = {key: np.zeros(self.days) for key in OUTCOME_KEYS}
         cum_imps = cum_reach = clicks = conv = spend = 0.0
         for d in range(self.days):
+            imps_day = w[d] * imps_base
+            spend_day = w[d] * spend_base
             new_reach = (self.pool - cum_reach) * (1 - np.exp(-imps_day / self.pool)) if self.pool > 0 else 0.0
             cum_reach += new_reach
             cum_imps += imps_day
@@ -94,10 +128,12 @@ def build_models(
     pools: dict[str, float],
     fatigue_delta: float,
     grid_size: int = GRID_SIZE,
+    day_offset: int = 0,
 ) -> dict[str, ChannelModel]:
     return {
         cid: ChannelModel(
-            channel_id=cid, curve=curve, days=days, pool=pools[cid], fatigue_delta=fatigue_delta, grid_size=grid_size
+            channel_id=cid, curve=curve, days=days, pool=pools[cid], fatigue_delta=fatigue_delta,
+            grid_size=grid_size, day_offset=day_offset,
         )
         for cid, curve in curves.items()
     }

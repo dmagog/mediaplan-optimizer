@@ -132,3 +132,65 @@ def test_brief_rejects_duplicates_and_overlock(demo_brief):
         )
     with pytest.raises(ValueError):
         Brief.model_validate({**demo_brief.model_dump(), "locked": {"sms": 900_000.0, "social_1": 500_000.0}})
+
+
+def test_calendar_follows_daily_demand(demo_plan, curves):
+    """Бюджет дня пропорционален спросу дня: в тихий день лишние деньги некуда девать."""
+    by_day: dict[int, float] = {}
+    for cell in demo_plan.calendar:
+        by_day[cell.day] = by_day.get(cell.day, 0.0) + cell.budget_rub
+    assert abs(sum(by_day.values()) - demo_plan.total_budget_rub) < 1.0
+    assert max(by_day.values()) > min(by_day.values()) * 1.02, "дни вышли одинаковыми, спрос не учтён"
+
+    # sms — рассылка по расписанию: спрос по дням у неё ровный, и календарь у неё ровный
+    def spread(cid: str) -> float:
+        w = [sum(curves[cid].hourly_share(d * 24 + h) for h in range(24)) for d in range(7)]
+        return max(w) - min(w)
+
+    cid = max((a.channel_id for a in demo_plan.allocations if a.budget_rub > 0), key=spread)
+    assert spread(cid) > 0.01, "ни у одного канала в ретро нет разницы дней"
+    cells = {c.day: c.budget_rub for c in demo_plan.calendar if c.channel_id == cid}
+    weights = [sum(curves[cid].hourly_share(d * 24 + h) for h in range(24)) for d in range(7)]
+    quiet, loud = min(range(7), key=weights.__getitem__), max(range(7), key=weights.__getitem__)
+    assert cells[loud + 1] > cells[quiet + 1]
+
+
+def test_hourly_caps_match_the_calendar(demo_plan):
+    """Часовые лимиты и календарь — одна и та же раскладка, а не два независимых счёта."""
+    by_day: dict[int, float] = {}
+    for cell in demo_plan.calendar:
+        by_day[cell.day] = by_day.get(cell.day, 0.0) + cell.budget_rub
+    for day, budget in by_day.items():
+        from_caps = sum(sum(c.values()) for c in demo_plan.hourly_caps[(day - 1) * 24 : day * 24])
+        assert abs(from_caps - budget) < 1.0, f"день {day}"
+
+
+def test_price_ceiling_is_named_as_the_binding_constraint(catalog, curves):
+    """Потолок цены связывает — значит и предлагать надо поднять его, а не менять срок."""
+    brief = Brief(
+        target_kpi=TargetKpi.CONVERSIONS, target_value=2_000.0, horizon_days=21,
+        channel_ids=catalog.channel_ids, max_cpa_rub=300.0,
+    )
+    p = plan(brief, catalog, curves)
+    assert p.infeasibility is not None
+    assert p.infeasibility.binding_constraint is BindingConstraint.ECONOMICS
+    move = next(s for s in p.infeasibility.suggestions if s.changed_field == "max_cpa_rub")
+    assert move.suggested_value > 300.0
+
+    raised = brief.model_copy(update={"max_cpa_rub": float(move.suggested_value)})
+    p2 = plan(raised, catalog, curves)
+    assert p2.is_feasible and p2.total_kpi >= 2_000.0 * 0.99
+
+
+def test_type_a_says_why_the_budget_is_not_placed(catalog, curves):
+    """Тип A не отказывает, но обязан объяснить недоразмещение: потолок цены или ёмкость."""
+    capped = Brief(budget_rub=1_200_000, horizon_days=21, channel_ids=catalog.channel_ids, max_cpa_rub=100.0)
+    p = plan(capped, catalog, curves)
+    assert p.is_feasible and p.total_budget_rub < 1_200_000
+    assert any("потолок средней цены" in line for line in p.explanation)
+
+    huge = Brief(budget_rub=9_000_000, horizon_days=21, channel_ids=catalog.channel_ids)
+    p2 = plan(huge, catalog, curves)
+    assert p2.is_feasible and p2.total_budget_rub < 9_000_000
+    assert any("ёмкость каналов" in line for line in p2.explanation)
+    assert any("разместился бы за" in line for line in p2.explanation)

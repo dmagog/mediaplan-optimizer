@@ -23,6 +23,14 @@ planner:
     value: 300
     status: numerical
     note: "порций жадного наливания внутри бисекции по бюджету (тип B и диагноз): грубее основной сетки ради скорости, результат проверяется test_allocation_stable_under_finer_steps"
+  cap_search_growth:
+    value: 1.05
+    status: numerical
+    note: "шаг подбора потолка средней цены в ходе «поднять потолок»: цена, при которой цель достижима, ищется от расчётной вверх"
+  cap_search_steps:
+    value: 12
+    status: numerical
+    note: "шагов такого подбора: 12 шагов по 5 % накрывают потолок до 1,8 расчётной цены, дальше связывает не потолок"
   budget_bisection_iterations:
     value: 40
     status: numerical
