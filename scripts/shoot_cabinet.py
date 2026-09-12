@@ -56,9 +56,12 @@ def _to_the_end(pg) -> None:
     Переносы дороже лимита полномочий ждут решения человека, поэтому одного нажатия
     «К концу кампании» не хватает — иначе съёмка висла на первой же карточке.
     """
-    for _ in range(80):
+    for _ in range(200):
         if pg.query_selector("#btn-gosummary"):
             return
+        # у заказчика карточки решает менеджер, а если он молчит сутки — правило
+        # ведения применяет перенос само и пересчитывает кампанию. На время
+        # пересчёта кнопки заблокированы, поэтому здесь нужно просто терпение
         # карточки перерисовываются после каждого решения, поэтому найденный элемент
         # может отвалиться от DOM между проверкой и нажатием — это не ошибка, а повтор
         for selector in ("button[data-d='approve']", "#p-end"):
@@ -72,7 +75,7 @@ def _to_the_end(pg) -> None:
                 pg.wait_for_timeout(500)
                 break
         else:
-            pg.wait_for_timeout(1000)  # пересчёт после решения: кнопки заблокированы
+            pg.wait_for_timeout(1500)  # пересчёт после решения: кнопки заблокированы
     raise RuntimeError("кампания не доиграна до конца: карточки не кончаются")
 
 
@@ -82,9 +85,9 @@ def _shot(pg, out: Path, name: str, selector: str | None = None) -> None:
     print(f"  {name}.png")
 
 
-def _screens(pg, out: Path, prefix: str) -> None:
+def _screens(pg, out: Path, prefix: str, brief: str = DEMO1) -> None:
     """Четыре экрана одного кабинета: бриф, план, кампания на дне шока, итог."""
-    _plan(pg, DEMO1)
+    _plan(pg, brief)
     pg.evaluate("() => showScreen('brief')")
     pg.wait_for_timeout(600)
     _shot(pg, out, f"{prefix}-01-brief")
@@ -134,8 +137,26 @@ def _manager_extras(pg, out: Path) -> None:
 
 
 def _customer_extras(pg, out: Path) -> None:
-    """Итог заказчику без шапки: плитки и короткая таблица."""
-    _shot(pg, out, "summary-short", "#summary-body")
+    """Итог заказчику одной картинкой: блок «Коротко» и плитки, без таблиц.
+
+    Липкая шапка перекрывает верх элемента, а вся таблица по каналам в этот кадр не
+    нужна, поэтому режем по рамке «Коротко» плюс строка плиток.
+    """
+    pg.evaluate("() => window.scrollTo(0, 0)")
+    pg.wait_for_timeout(400)
+    box = pg.evaluate("""() => {
+        const first = document.querySelector('#summary-body .statement');
+        const stats = document.querySelector('#summary-body .stats');
+        if (!first || !stats) return null;
+        const a = first.getBoundingClientRect(), b = stats.getBoundingClientRect();
+        return {x: Math.min(a.x, b.x) - 8, y: a.y + 3,
+                width: Math.max(a.width, b.width) + 16, height: b.bottom - a.y + 5};
+    }""")
+    if box:
+        pg.screenshot(path=str(out / "summary-short.png"), clip=box)
+        print("  summary-short.png")
+    else:
+        _shot(pg, out, "summary-short", "#summary-body")
 
 
 def _player_gif(pg, out: Path, frames: int = 8, width: int = 980) -> None:
@@ -149,12 +170,13 @@ def _player_gif(pg, out: Path, frames: int = 8, width: int = 980) -> None:
 
     _plan(pg, DEMO1)
     _run_campaign(pg)
-    shots: list[Path] = []
+    shots: list[tuple[int, Path]] = []
 
     def frame() -> None:
+        hour = pg.evaluate("() => PLAYER.h || 1")
         path = out / f"_frame{len(shots):02d}.png"
         pg.screenshot(path=str(path))
-        shots.append(path)
+        shots.append((hour, path))
 
     frame()
     for _ in range(frames - 1):
@@ -178,15 +200,28 @@ def _player_gif(pg, out: Path, frames: int = 8, width: int = 980) -> None:
             continue
         frame()
 
+    # событий в кампании бывает всего два-три, а гифка должна показывать ход по часам:
+    # доливаем равномерные часы между остановками, пока кадров не станет достаточно
+    total = pg.evaluate("() => RUN.main.hours.length")
+    step = max(total // frames, 1)
+    hour = step
+    while len(shots) < frames and hour < total:
+        if all(abs(hour - h) > step // 2 for h, _ in shots):
+            pg.evaluate(f"() => showHour({hour})")
+            pg.wait_for_timeout(700)
+            frame()
+        hour += step
+    shots.sort(key=lambda pair: pair[0])
+
     images = []
-    for path in shots:
+    for _, path in shots:
         img = Image.open(path)
         img = img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
         images.append(img.convert("P", palette=Image.ADAPTIVE, colors=64))
     images[0].save(
         out / "player.gif", save_all=True, append_images=images[1:], duration=1400, loop=0, optimize=True
     )
-    for path in shots:
+    for _, path in shots:
         path.unlink()
     size = (out / "player.gif").stat().st_size / 1024
     print(f"  player.gif — {len(images)} кадров, {size:.0f} КБ")
@@ -201,24 +236,25 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     only = {p.strip() for p in args.only.split(",") if p.strip()} or {"manager", "customer", "extras", "gif"}
 
+    # каждый блок снимаем на свежей странице: после прогона кампании состояние
+    # кабинета другое, и следующий блок начинал с экрана итога вместо брифа
+    blocks = [
+        ("manager", "manager", lambda pg: _screens(pg, args.out, "manager")),
+        ("extras", "manager", lambda pg: _manager_extras(pg, args.out)),
+        ("gif", "manager", lambda pg: _player_gif(pg, args.out)),
+        ("customer", "customer", lambda pg: (_screens(pg, args.out, "customer"), _customer_extras(pg, args.out))),
+    ]
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        for role, parts in (("manager", {"manager", "extras", "gif"}), ("customer", {"customer"})):
-            if not (only & parts):
+        for name, role, run in blocks:
+            if name not in only:
                 continue
             page = browser.new_page(viewport={"width": 1360, "height": 940})
             page.on("pageerror", lambda e: print(f"  ОШИБКА СТРАНИЦЫ: {e}"))
             page.goto(f"{args.base}/?role={role}")
             page.wait_for_selector("#btn-demo1", timeout=60000)
-            print(f"кабинет {role}:")
-            if role in only:
-                _screens(page, args.out, role)
-                if role == "customer":
-                    _customer_extras(page, args.out)
-            if role == "manager" and "extras" in only:
-                _manager_extras(page, args.out)
-            if role == "manager" and "gif" in only:
-                _player_gif(page, args.out)
+            print(f"кабинет {role}, блок {name}:")
+            run(page)
             page.close()
         browser.close()
     print(f"снимки в {args.out}")

@@ -970,7 +970,7 @@ function renderPlanGeo(p) {
     <div class="geo">
       <div>
         <div class="sliders tech" id="geo-sliders"></div>
-        <div class="simple">${rows.map(r => `<div class="kv"><span>${esc(r.title)}</span><span><b>${rub(Math.round(r.budget))}</b> · ${pct(r.share, 0)}</span></div>`).join('')}</div>
+        <div class="simple kvs">${rows.map(r => `<div class="kv"><span>${esc(r.title)}</span><span><b>${rub(Math.round(r.budget))}</b> · ${pct(r.share, 0)}</span></div>`).join('')}</div>
         <p class="muted" style="margin-top:12px;max-width:640px">${manual ? 'Бюджет поделён вашими руками.' : 'Бюджет поделён по населению округов.'} <span class="tech">Деление между округами — плановое: прогноз и кампания по часам считаются по всей выбранной географии целиком; ёмкость каналов уже пересчитана на её аудиторию.</span></p>
       </div>
       <div class="map readonly" id="plan-map"></div>
@@ -1688,12 +1688,17 @@ function renderSummary(r) {
   const k = v.kpi_name, cpaPlan = v.promised_spend / (v.promised_kpi || 1), cpaFact = v.actual_spend / (v.actual_kpi || 1), gain = v.actual_kpi - v.frozen_kpi, gainSpend = v.actual_spend - v.frozen_spend;
   const verdictPhrase = kept ? (cautious ? 'Обещание с запасом выполнено' : dev >= 0 ? `Обещание выполнено: получили на ${pct(dev,1)} больше прогноза` : `Результат в пределах допуска: на ${pct(Math.abs(dev),1)} меньше прогноза при допуске ±${pct(PLAN.corridor_rel,0)}`) : `Обещание не выполнено: недобор ${pct(Math.abs(dev),1)} больше допуска ±${pct(PLAN.corridor_rel,0)}`;
   const priceTile = [`${priceWord(k, true)} по факту`, `${fmt(cpaFact, cpaFact < 10 ? 2 : 0)} ₽`, `план ${fmt(cpaPlan, cpaPlan < 10 ? 2 : 0)} ₽ (${spct(cpaFact / cpaPlan - 1)})`, cpaFact > cpaPlan * (1 + PLAN.corridor_rel) ? 'accent' : ''];
+  const applied = m.proposals.filter(p => p.applied_by === 'human');
+  // правило применяет перенос тем же вызовом, что и человек: по applied_by их не
+  // различить, но часы, где сработало правило, кабинет помнит в r._auto
+  const byRule = applied.filter(p => (r._auto || {})[p.hour]).length;
+  const byHand = applied.length - byRule;
   const tiles = [
     ['Обещание', keptWord, keptNote, kept ? '' : 'accent'],
     priceTile,
     ['Возвращено бюджета', rub(returned), returnedNote, ''],
     ...(r.isStatic ? [] : [['Что дало ведение', `${gain >= 0 ? '+' : ''}${fmt(gain)} ${plural(gain, k)}`, `за ${gainSpend >= 0 ? '+' : ''}${rub(gainSpend)} к расходу${gain > 0 && gainSpend > 0 ? ` — по ${fmt(gainSpend / gain)} ₽ за дополнительную (план ${fmt(cpaPlan, cpaPlan < 10 ? 2 : 0)} ₽)` : ''}`, '']]),
-    ['Переносов автоматики', String(m.proposals.filter(p => p.applied_by === 'system').length), `ждали <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>: ${v.human_requests}${m.proposals.some(p => p.applied_by === 'human') ? `, сделано <span class="tech">вами</span><span class="simple">менеджером</span>: ${m.proposals.filter(p => p.applied_by === 'human').length}` : ''}`, ''],
+    ['Переносов автоматики', String(m.proposals.filter(p => p.applied_by === 'system').length), `ждали <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>: ${v.human_requests}${byHand ? `, решил <span class="tech">лично</span><span class="simple">менеджер</span>: ${byHand}` : ''}${byRule ? `, применило правило: ${byRule}` : ''}`, ''],
     ['Порог кейса ' + pct(v.threshold,0), v.within_threshold ? 'в пороге' : 'вне порога', `расход ${pct(v.final_deviation_spend)}, ${K.nomPl} ${pct(v.final_deviation_kpi)}${PLAN._base ? ' от плана с резервом' : ''}; план без изменений ${pct(v.frozen_final_deviation_spend)} / ${pct(v.frozen_final_deviation_kpi)} (${v.frozen_within_threshold ? 'в пороге' : 'вне порога'})`, 'tech' + (v.within_threshold ? '' : ' accent')],
   ];
   // лучший и худший канал — по цене единицы против плана, а не по объёму: объём каналам перекладывала автоматика
