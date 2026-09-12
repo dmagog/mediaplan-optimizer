@@ -21,8 +21,8 @@
 оптимум описывается равенством предельных отдач по каналам — то же, что даёт
 множитель Лагранжа. Реализовано жадным наливанием порциями
 (`brain/planner/allocator.py`), а не солвером: ёмкость входит естественно, а
-порядок наливания сам является объяснением плана. Первоисточник: J. D. C.
-Little, L. M. Lodish, «A Media Planning Calculus», Operations Research 17(1),
+порядок наливания и есть объяснение плана. Первоисточник: J. D. C. Little, L.
+M. Lodish, «A Media Planning Calculus», Operations Research 17(1),
 1969. https://pubsonline.informs.org/doi/10.1287/opre.17.1.1
 
 **Распределение ограниченной ёмкости под обещанные объёмы.** Идея двойственной
@@ -93,7 +93,7 @@ Gur, «Learning in Repeated Auctions with Budgets».
 
 **Байесовская оценка показателей.** Бета-биномиальное сглаживание с априором
 из каталожного бенчмарка. Мотив — расчёт масштаба: при 1,2 млн ₽ на 21 день и
-восьми каналах на канал приходится ~300 ₽ в час, то есть порядка тысячи
+восьми каналах на канал приходится ~300 ₽ в час, то есть порядка тысячи
 показов и доли конверсии. Наивная оценка на таких числах — шум. Реализация:
 `brain/executor/estimator.py`.
 
@@ -144,8 +144,8 @@ KPI подчинена удержанию темпа. Полный список 
 `brain/executor/controller.py`.
 - Множитель темпа по бандам ошибки: «Feedback Control for Small Budget Pacing»
 (arXiv:2509.25429); средний шаг 10 % как у LinkedIn (KDD'14). Там же.
-- Ограничение доли канала ±30 % за перерешение: Meridian, `spend_constraint_lower/upper`.
-- Порог детектора 30 % и окно «сутки против недавних дней»: Improvado, Campaign
+- Ограничение доли канала ±30 % за перерешение: Meridian, `spend_constraint_lower/upper`.
+- Порог детектора 30 % и окно «сутки против недавних дней»: Improvado, Campaign
 Monitoring & Anomaly Detection Guide. `brain/executor/estimator.py`.
 - Настройка CUSUM k = 0,5σ, h = 4–6σ: NIST/SEMATECH e-Handbook, раздел 6.3.2.3.
 Проверена и отвергнута для часового автокоррелированного шума  
@@ -155,4 +155,4 @@ Monitoring & Anomaly Detection Guide. `brain/executor/estimator.py`.
 («прогноз по истории похожих кампаний»); разрешено презентацией кейса.
 - Устройство стенда сравнения (общие случайные числа по ключу, парные прогоны,
 baseline «без управления»): контракт мира MLE #2
-(`docs/world/WORLD_MODEL.md`),   стенд eBay (AdKDD'23), AuctionGym.
+(`docs/world/WORLD_MODEL.md`), стенд eBay (AdKDD'23), AuctionGym.

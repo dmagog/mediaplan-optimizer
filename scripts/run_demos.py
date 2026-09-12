@@ -83,7 +83,7 @@ def main() -> None:
     parser.add_argument(
         "--reuse-comparison", action="store_true",
         help="взять секции стенда из results/comparison.json прошлого прогона: демонстрации "
-             "пересчитываются, стенд (полчаса на сотне миров) — нет",
+             "пересчитываются, стенд (около 40 минут на 100 мирах) — нет",
     )
     args = parser.parse_args()
     RESULTS.mkdir(exist_ok=True)

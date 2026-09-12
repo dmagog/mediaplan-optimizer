@@ -214,7 +214,7 @@ with TestClient(app) as client:
     (MD, """## Что дальше
 
 - Кабинет: `uvicorn app.main:app --port 8000`; экраны и роли описаны в `docs/cabinet.md`.
-- Стенд на сотне миров: `python scripts/run_demos.py --seeds 100`, отчёт в `results/report.md`.
+- Стенд на 100 мирах: `python scripts/run_demos.py --seeds 100`, отчёт в `results/report.md`.
 - Откуда каждое число: `config/benchmarks.yaml`, `config/assumptions.yaml`, `config/geo.yaml`."""),
 ]
 

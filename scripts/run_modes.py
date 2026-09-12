@@ -93,7 +93,7 @@ def main() -> None:
 
     RESULTS.mkdir(exist_ok=True)
     # число миров в имени файла: README и docs/business_position.md цитируют его как
-    # «100 миров», и прогон на двадцати не должен молча подменять эти таблицы
+    # «100 миров», и прогон на 20 мирах не должен молча подменять эти таблицы
     first = {scenarios[0]: modes[scenarios[0]], "seeds": args.seeds}
     (RESULTS / f"modes_{args.seeds}.json").write_text(json.dumps(first, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     maxmode["seeds"] = args.seeds

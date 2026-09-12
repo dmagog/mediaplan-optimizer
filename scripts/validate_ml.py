@@ -85,14 +85,14 @@ def main():
         report["scenarios"][scenario] = dict(metrics=metrics, paired_wape_delta=stats(delta), runs=summaries)
     Path("results/ml_validation.json").write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n")
     Path("results/ml_model.json").write_text(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2)+"\n")
-    lines = ["# ML: независимая проверка", "", f"Модель `{bundle.model_id}`. 30 paired seeds × 2 сценария × 3 стратегии = 180 эпизодов по 21 дню.",
+    lines = ["# ML: независимая проверка", "", f"Модель `{bundle.model_id}`. 30 парных миров × 2 сценария × 3 стратегии = 180 эпизодов по 21 дню.",
              "Один базовый утверждённый план; оценивается ML исполнения, а не эффект другого плана. Настройки не подбирались на тесте.", "",
              "| Сценарий / стратегия | WAPE KPI, среднее ± σ | Финальное отклонение | WAPE после часа 240 | Нарушения |",
              "|---|---:|---:|---:|---:|"]
     for scenario, section in report["scenarios"].items():
         for name, row in section["metrics"].items():
             lines.append(f"| {scenario} / {name} | {row['wape_kpi']['mean']:.2%} ± {row['wape_kpi']['std']:.2%} | {row['final_deviation_kpi']['mean']:.2%} | {row['post_shock_wape']['mean']:.2%} | {row['constraint_violations']} |")
-    lines += ["", "Снижение WAPE — лучше. В JSON сохранены разброс, MAPE, абсолютные ошибки, расход, парные разности и результаты каждого seed.",
+    lines += ["", "Снижение WAPE — лучше. В JSON сохранены разброс, MAPE, абсолютные ошибки, расход, парные разности и результат каждого мира.",
               "", "## Проверки самих моделей", "", "```json", json.dumps({k:v for k,v in report.items() if 'holdout' in k}, ensure_ascii=False, indent=2), "```",
               "", "Все данные синтетические. Оценки не доказывают переносимость на реальные рекламные кабинеты; score детектора не калиброван как вероятность фрода."]
     Path("results/ml_validation.md").write_text("\n".join(lines)+"\n")
