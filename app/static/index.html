@@ -334,7 +334,7 @@
           <div class="field"><label>Остановить кампанию через, часов</label><input class="input num" id="stop_after" type="number" min="0" max="336" step="1" value="72"></div>
           <div class="field span err" id="rules-err" hidden></div>
         </div>
-        <p class="muted">Перенос дороже лимита ждёт человека, и деньги всё это время лежат в прежнем канале. Первый порог: через сколько часов молчания система применяет своё предложение сама — это записывается в ленту и откатывается кнопкой. Второй: через сколько часов кампания встаёт и дальше не идёт, пока решение не примут. 0 — правило выключено; второй порог должен быть больше первого.</p>
+        <p class="muted">Перенос дороже лимита ждёт человека, и деньги всё это время лежат в прежнем канале. Первый порог: через сколько часов молчания система применяет своё предложение сама — это записывается в ленту и откатывается кнопкой. Второй: через сколько часов кампания встаёт и дальше не идёт, пока решение не примут. 0 выключает порог. Остановка должна быть позже автоматического решения, поэтому срабатывает она только при выключенном первом пороге: иначе система успевает применить перенос раньше.</p>
       </section>
       <section>
         <h6>Бюджет</h6>
@@ -690,8 +690,14 @@ function readRules() {
   $('#btn-rules-ok').disabled = bad;
   return !bad;
 }
-const waitWords = () => RULES.auto_after > 0 || RULES.stop_after > 0
-  ? [RULES.auto_after > 0 ? `сами через ${hoursWord(RULES.auto_after)}` : null, RULES.stop_after > 0 ? `стоп через ${hoursWord(RULES.stop_after)}` : null].filter(Boolean).join(', ')
+// Сработает только один порог из двух. Порог остановки больше порога молчания (это стережёт
+// readRules), поэтому при включённом автоматическом решении карточка подойдёт под него раньше,
+// чем под остановку, и ruleState вычтет её из остановленных: остановка достаётся только случаю
+// auto_after = 0. Обещаем тот порог, до которого дело действительно дойдёт
+const ruleWords = () => RULES.auto_after > 0 ? `если не решить за ${hoursWord(RULES.auto_after)}, система применит перенос сама`
+  : RULES.stop_after > 0 ? `если не решить за ${hoursWord(RULES.stop_after)}, кампания встанет` : '';
+const waitWords = () => RULES.auto_after > 0 ? `сами через ${hoursWord(RULES.auto_after)}`
+  : RULES.stop_after > 0 ? `стоп через ${hoursWord(RULES.stop_after)}`
   : 'ждём человека сколько угодно';
 const hoursWord = (h) => h % 24 === 0 && h >= 24 ? days(h / 24) : `${h} ${pw(h, ['час','часа','часов'])}`;
 // Часть правил — это бриф (лимит, потолок цены, обещание): они попадают в план при расчёте.
@@ -1150,7 +1156,7 @@ function runBrief(p) {
   const planSeg = targetWords(p.brief.targeting);
   const ev = sc && sc.events.length ? sc.events.map(e => eventLine(e, nDays)).join('; ') : 'без событий — спокойный рынок';
   const n = SHOCKS.length;
-  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: ${planRegions.length ? `${planRegions.map(id => esc(geoOf(id).title)).join(', ')} ${planRegions.length > 1 ? 'округа' : 'округ'} (${pct(planGeo.audience_share || 1, 0)} аудитории страны), ` : 'вся Россия, '}${planSeg ? `сегмент ${esc(planSeg)}, ` : ''}бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>${RULES.auto_after > 0 || RULES.stop_after > 0 ? `; если решения нет — ${[RULES.auto_after > 0 ? `через ${hoursWord(RULES.auto_after)} система применит перенос сама` : null, RULES.stop_after > 0 ? `через ${hoursWord(RULES.stop_after)} кампания встанет` : null].filter(Boolean).join(', ')}` : ''}.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
+  return `<h6 style="margin-bottom:8px">Что запускаем</h6>Кампания на ${days(nDays)}${dayDate(1) ? ` (с ${dayDate(1)} по ${dayDate(nDays)})` : ''}: ${planRegions.length ? `${planRegions.map(id => esc(geoOf(id).title)).join(', ')} ${planRegions.length > 1 ? 'округа' : 'округ'} (${pct(planGeo.audience_share || 1, 0)} аудитории страны), ` : 'вся Россия, '}${planSeg ? `сегмент ${esc(planSeg)}, ` : ''}бюджет ${rub(p.total_budget_rub)}, ожидаем ${kpiN(p.forecast.p50, p.kpi_name, true)}${p._promise && p._promise.mode === 'cautious' ? `, обещаем не меньше ${fmt(p._promise.value)}` : ''}. Автоматика раз в шесть часов перекладывает деньги между каналами, если план расходится с фактом; переносы дороже ${p.brief.automation_limit_rub ? rub(p.brief.automation_limit_rub) : 'лимита (не задан)'} ждут <span class="tech">вашего решения</span><span class="simple">решения менеджера</span>${ruleWords() ? `; ${ruleWords()}` : ''}.<br><b>Рынок в этом прогоне:</b> ${esc(ruTitle(sc ? sc.title : FORM.scenario))} — ${esc(ev)}${n ? `; плюс ${n === 1 ? 'ваш шок' : 'ваши шоки'}: ${SHOCKS.map(sk => `${esc(nm(sk.channel_id))} · ${SHOCK_PARAM_RU[sk.parameter] || sk.parameter} ×${String(sk.multiplier).replace('.', ',')} со дня ${sk.day}`).join('; ')}` : ''}. Это учебный сценарий, а не реальное отключение площадки: так видно, как автоматика ведёт себя при сбое.`;
 }
 
 // ---------- сценарии рынка и свои шоки ----------
@@ -1362,7 +1368,7 @@ function cardText(p, r, H) {
   else { who = `<span class="tech">нужно ваше решение</span><span class="simple">ждёт решения менеджера</span>: ${rub(p.amount_rub)} выше лимита ${rub(limit)}`; cls = 'pending'; }
   // кнопки решения и отката — только в кабинете менеджера; заказчик видит карточку и кто по ней решает
   const undo = p.applied_by === 'human' ? `<div class="actions tech" style="margin-top:8px"><button class="btn btn-secondary btn-sm" data-h="${p.hour}" data-d="undo">${(r._auto || {})[p.hour] ? 'Отменить перенос' : 'Отменить мой перенос'}</button></div>` : '';
-  const btns = (p.applied_by === 'pending' && !d) ? `<div class="tech" style="margin-top:6px"><b>Советуем: перенести.</b> Если не решать, деньги останутся на месте.</div><div class="actions tech" style="margin-top:8px;gap:8px"><button class="btn btn-primary btn-sm" data-h="${p.hour}" data-d="approve">Перенести</button><button class="btn btn-secondary btn-sm" data-h="${p.hour}" data-d="decline">Оставить как есть</button></div><div class="simple" style="margin-top:6px"><b>Решает менеджер.</b> Сумма выше лимита, который вы задали в брифе; пока перенос не решён, деньги остаются в прежнем канале.</div>${RULES.auto_after > 0 || RULES.stop_after > 0 ? `<div class="muted" style="margin-top:6px">По правилу: ${[RULES.auto_after > 0 ? `если не решить за ${hoursWord(RULES.auto_after)}, система применит перенос сама` : null, RULES.stop_after > 0 ? `через ${hoursWord(RULES.stop_after)} кампания встанет` : null].filter(Boolean).join('; ')}.</div>` : ''}` : '';
+  const btns = (p.applied_by === 'pending' && !d) ? `<div class="tech" style="margin-top:6px"><b>Советуем: перенести.</b> Если не решать, деньги останутся на месте.</div><div class="actions tech" style="margin-top:8px;gap:8px"><button class="btn btn-primary btn-sm" data-h="${p.hour}" data-d="approve">Перенести</button><button class="btn btn-secondary btn-sm" data-h="${p.hour}" data-d="decline">Оставить как есть</button></div><div class="simple" style="margin-top:6px"><b>Решает менеджер.</b> Сумма выше лимита, который вы задали в брифе; пока перенос не решён, деньги остаются в прежнем канале.</div>${ruleWords() ? `<div class="muted" style="margin-top:6px">По правилу: ${ruleWords()}.</div>` : ''}` : '';
   return `<div class="card ${cls}"><div class="card-kicker">${hourLabel(p.hour)} · ${who}</div><div class="card-title">Перенести ${rub(p.amount_rub)} из «${esc(nm(p.from_channel))}» в «${esc(nm(p.to_channel))}»</div><div style="display:grid;gap:2px"><div><span class="muted">Почему:</span> ${why}</div><div><span class="muted">Если сделать:</span> ${ifDo}</div><div><span class="muted">Если не делать:</span> ${ifNot}</div></div>${btns}${undo}</div>`;
 }
 
@@ -1460,8 +1466,9 @@ function stopReasons(r, H) {
   for (const p of m.proposals) if (p.hour === H) { const waits = p.applied_by === 'pending' && !(r.decisions||{})[p.hour]; if (waits && isCustomer()) continue; out.push(waits ? 'карточка ждёт вашего решения' : 'перенос бюджета'); }
   return out;
 }
-// Карточка, которую не решают: через RULES.auto_after система применяет её сама,
-// через RULES.stop_after кампания встаёт. Часы обоих событий — остановки плеера в обоих кабинетах
+// Карточка, которую не решают: через RULES.auto_after система применяет её сама, а если
+// автоматическое решение выключено — через RULES.stop_after кампания встаёт. Часы обоих
+// событий — остановки плеера в обоих кабинетах
 function pendingCards(r, H) {
   return r.main.proposals.filter(p => p.applied_by === 'pending' && !(r.decisions || {})[p.hour] && (H == null || p.hour <= H));
 }
@@ -1491,10 +1498,13 @@ function stops(r) {
   const other = new Set([...r.eventHours, ...r.shockHours, ...Object.values(r.verdict.detection_hours), ...rules]);
   return r.stopHours.concat(rules).filter(h => other.has(h)).sort((a, b) => a - b).filter((h, i, a) => h !== a[i - 1]);
 }
-// Правило ожидания на текущем часе: сначала остановка кампании, потом автоматическое решение
+// Правило ожидания на текущем часе: сначала автоматическое решение, остановка — только когда
+// автоматическое решение выключено
 function ruleState(r, H) {
   const cards = rulePending(r, H);
-  // сначала автоматическое решение: до остановки система успевает решить сама
+  // порог остановки больше порога молчания, значит подошедшая под остановку карточка уже подошла
+  // и под автоматическое решение: при auto_after > 0 stopped всегда пуст. Это же говорят тексты
+  // карточки и брифа — их даёт ruleWords
   const due = RULES.auto_after > 0 ? cards.filter(p => H - p.hour >= RULES.auto_after) : [];
   const stopped = RULES.stop_after > 0 ? cards.filter(p => H - p.hour >= RULES.stop_after && !due.includes(p)) : [];
   return {stopped, due};
