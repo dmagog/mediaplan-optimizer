@@ -67,7 +67,7 @@ uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 
 | Артефакт | Где | Как пересобрать |
 |---|---|---|
-| Скринкаст с озвучкой, 4,2 минуты: постановки A и B, план, кампания, экран недостижимости | [docs/screencast.mp4](docs/screencast.mp4) | `python scripts/record_screencast.py` (нужны Playwright, edge-tts, ffmpeg); текст реплик — [docs/voiceover.md](docs/voiceover.md) |
+| Скринкаст с озвучкой, 4,3 минуты: заставка, постановки A и B, план, кампания, экран недостижимости | [docs/screencast.mp4](docs/screencast.mp4) | `python scripts/record_screencast.py` (нужны Playwright, edge-tts, ffmpeg); текст реплик — [docs/voiceover.md](docs/voiceover.md) |
 | Снимки кабинета и гифка плеера: 15 экранов обоих кабинетов | [docs/figures/cabinet](docs/figures/cabinet) | `python scripts/shoot_cabinet.py` (нужны Playwright и Pillow) |
 | Ноутбук со сквозным сценарием и выводами | [notebooks/demo.ipynb](notebooks/demo.ipynb) | `.venv/bin/python scripts/build_demo_notebook.py` |
 | Итоговый отчёт одним файлом | [report/report.html](report/report.html) | `.venv/bin/python scripts/build_report.py` |

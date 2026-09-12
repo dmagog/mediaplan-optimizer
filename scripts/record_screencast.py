@@ -29,8 +29,6 @@ import subprocess
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build" / "screencast"
 VOICEOVER = ROOT / "docs" / "voiceover.md"
@@ -70,6 +68,66 @@ def for_engine(speech: str) -> str:
     return re.sub(r"\+(.)", lambda m: m.group(1) + ACUTE, speech)
 
 
+# Подача: как читать фрагмент. Базовая — «ровно», остальные отличаются темпом,
+# тоном и громкостью. Сильнее уводить нельзя: голос начинает звучать как
+# объявление на вокзале. Проверять только на слух — `scripts/try_voice.py`.
+MANNER = {
+    "ровно": {"rate": "-5%", "pitch": "-8Hz", "volume": "+0%"},
+    "веско": {"rate": "-16%", "pitch": "-14Hz", "volume": "+0%"},
+    "живее": {"rate": "+7%", "pitch": "-4Hz", "volume": "+0%"},
+    "тише": {"rate": "-9%", "pitch": "-10Hz", "volume": "-20%"},
+}
+PAUSE_MS = 350  # «(пауза)» без числа
+MARK_RE = re.compile(r"\((пауза|" + "|".join(MANNER) + r")(?:\s+(\d{2,4}))?\)")
+
+
+def parse_speech(speech: str, scene: str) -> list[dict]:
+    """Реплика с пометками → последовательность фрагментов и пауз.
+
+    Пометки в круглых скобках: «(пауза)» и «(пауза 700)» — тишина в миллисекундах,
+    «(веско)», «(живее)», «(тише)», «(ровно)» — подача до следующей пометки.
+    Каждый фрагмент озвучивается отдельным вызовом со своими темпом и тоном:
+    внутри одного вызова движок прозодию не меняет, а теги разметки он
+    экранирует и читает вслух, поэтому иначе паузу и динамику не получить.
+    """
+    parts: list[dict] = []
+    manner, pos = "ровно", 0
+
+    def add_text(chunk: str) -> None:
+        chunk = chunk.strip()
+        if not chunk:
+            return
+        if "(" in chunk or ")" in chunk:
+            raise SystemExit(f"сцена {scene}: непонятная пометка в «{chunk[:60]}»")
+        parts.append({"text": for_engine(chunk), "manner": manner})
+
+    for mark in MARK_RE.finditer(speech):
+        add_text(speech[pos:mark.start()])
+        pos = mark.end()
+        if mark.group(1) == "пауза":
+            parts.append({"pause": int(mark.group(2) or PAUSE_MS) / 1000})
+        elif mark.group(2):
+            raise SystemExit(f"сцена {scene}: у подачи «{mark.group(1)}» не бывает числа")
+        else:
+            manner = mark.group(1)
+    add_text(speech[pos:])
+    spoken = [part for part in parts if "text" in part]
+    if not spoken:
+        raise SystemExit(f"сцена {scene}: в реплике нет текста")
+    # Фрагмент — отдельный вызов синтеза, и движок читает его как законченную фразу.
+    # Значит рвать можно только по знаку: оборванный на слове фрагмент звучит
+    # так, будто диктор запнулся
+    for part in spoken[:-1]:
+        if part["text"][-1] not in ",.:;!?—…":
+            raise SystemExit(
+                f"сцена {scene}: фрагмент «…{part['text'][-40:]}» кончается на слове — "
+                f"поставьте перед пометкой запятую, тире или двоеточие"
+            )
+    if spoken[-1]["text"][-1] not in ".!?…":
+        raise SystemExit(f"сцена {scene}: реплика кончается без точки")
+    return parts
+
+
 def duration(path: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -79,47 +137,171 @@ def duration(path: Path) -> float:
     return float(out.stdout.strip())
 
 
-def synthesize(scenes: dict[str, dict[str, str]], order: list[str]) -> dict[str, float]:
-    """Озвучиваем реплики и возвращаем длительность каждой в секундах."""
+def silence(seconds: float, path: Path) -> Path:
+    """Тишина тем же форматом, что и фрагменты: иначе склейка откажется копировать."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+         "-t", f"{seconds:.3f}", str(path)],
+        check=True,
+    )
+    return path
+
+
+SIL_RE = re.compile(r"silence_(start|end): (-?[\d.]+)")
+MARGIN = 0.06  # сколько тишины оставляем по краям фрагмента, чтобы не срезать звук
+
+
+def trim_to_wav(src: Path, dst: Path) -> tuple[Path, float]:
+    """Фрагмент без тишины по краям: движок кладёт её сам, до секунды с хвоста.
+
+    На восьмидесяти фрагментах это две лишние минуты мёртвого эфира, и паузы из
+    разметки перестают что-либо значить. Границы речи ищем измерением, а не
+    фильтром на глазок: так видно, сколько срезано, и можно не срезать вовсе,
+    если фрагмент оказался тихим целиком.
+    """
+    total = duration(src)
+    probe = subprocess.run(
+        ["ffmpeg", "-v", "info", "-i", str(src), "-af", "silencedetect=noise=-45dB:d=0.06",
+         "-f", "null", "-"],
+        capture_output=True, text=True, check=True,
+    )
+    spans, opened = [], None
+    for kind, value in SIL_RE.findall(probe.stderr):
+        if kind == "start":
+            opened = float(value)
+        elif opened is not None:
+            spans.append((opened, float(value)))
+            opened = None
+    if opened is not None:
+        spans.append((opened, total))
+    # длительность контейнера и время фильтра расходятся на кадр (24 мс на 24 кГц),
+    # поэтому допуск — кадр с запасом, иначе хвостовая тишина не распознаётся
+    edge = 0.05
+    head = spans[0][1] if spans and spans[0][0] <= edge else 0.0
+    tail = spans[-1][0] if spans and spans[-1][1] >= total - edge else total
+    start, end = max(0.0, head - MARGIN), min(total, tail + MARGIN)
+    if end - start < 0.2:  # фрагмент тихий целиком — не режем, пусть будет как есть
+        print(f"  {src.name}: речи не нашли, оставляем как есть")
+        start, end = 0.0, total
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-ss", f"{start:.3f}",
+         "-to", f"{end:.3f}", "-ar", "44100", "-ac", "2", str(dst)],
+        check=True,
+    )
+    return dst, total - (end - start)
+
+
+def to_wav(src: Path, dst: Path, whole_dur: float | None = None) -> Path:
+    args = ["ffmpeg", "-y", "-v", "error", "-i", str(src)]
+    if whole_dur is not None:  # добиваем тишиной до нужной длины
+        args += ["-af", f"apad=whole_dur={whole_dur:.3f}", "-t", f"{whole_dur:.3f}"]
+    subprocess.run([*args, "-ar", "44100", "-ac", "2", str(dst)], check=True)
+    return dst
+
+
+def concat(pieces: list[Path], out: Path) -> Path:
+    listing = out.with_suffix(".txt")
+    listing.write_text("".join(f"file '{p.resolve()}'\n" for p in pieces), encoding="utf-8")
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+         "-c", "copy", str(out)],
+        check=True,
+    )
+    return out
+
+
+# Замер по всем фрагментам скрипта: самый быстрый идёт 14,5 знака в секунду,
+# с поправкой на «живее» — 18,4. Порог 22 даёт полуторный запас и ловит обрезку
+# уже с потери четверти длительности. Проверка нужна, потому что обрезанный файл
+# не пустой: без неё в дорожку уходит полслова, и заметно это только на слух
+MAX_CHARS_PER_SECOND = 22
+
+
+async def synth_fragment(text: str, path: Path, voice: str = VOICE, rate: str = RATE,
+                         pitch: str = PITCH, volume: str = "+0%") -> Path:
+    """Один фрагмент одним вызовом синтеза; сервис иногда отдаёт пустой или обрезанный."""
     import edge_tts
 
-    BUILD.mkdir(parents=True, exist_ok=True)
-    lines = {name: for_engine(scenes[name]["speech"]) for name in order}  # разбор до синтеза
+    floor = len(text) / MAX_CHARS_PER_SECOND
+    for attempt in range(5):
+        trouble = ""
+        try:
+            speaker = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
+            await speaker.save(str(path))
+            if path.stat().st_size == 0:
+                trouble = "пустой файл"
+            else:
+                got = duration(path)
+                if got < floor:
+                    trouble = f"обрезано: {got:.2f} с на {len(text)} знаков"
+        except Exception as err:
+            trouble = str(err)
+        if not trouble:
+            return path
+        if attempt == 4:
+            raise SystemExit(f"не озвучили «{text[:50]}…»: {trouble}")
+        print(f"  попытка {attempt + 1} не удалась ({trouble}): {text[:40]}…")
+        await asyncio.sleep(3)
+    return path
+
+
+def synthesize(scenes: dict[str, dict[str, str]], order: list[str]) -> dict[str, float]:
+    """Озвучиваем реплики по фрагментам и возвращаем длительность каждой сцены."""
+    work = BUILD / "parts"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    script = {name: parse_speech(scenes[name]["speech"], name) for name in order}  # разбор до синтеза
 
     async def say_all() -> None:
         for name in order:
-            for attempt in range(4):  # сервис синтеза иногда отдаёт пустой ответ
-                try:
-                    speaker = edge_tts.Communicate(lines[name], VOICE, rate=RATE, pitch=PITCH)
-                    await speaker.save(str(BUILD / f"{name}.mp3"))
-                    break
-                except Exception as err:
-                    if attempt == 3:
-                        raise SystemExit(f"не озвучили сцену {name}: {err}") from None
-                    print(f"  {name}: попытка {attempt + 1} не удалась, повторяем")
-                    await asyncio.sleep(3)
+            for i, part in enumerate(script[name]):
+                if "pause" in part:
+                    continue
+                style = MANNER[part["manner"]]
+                await synth_fragment(part["text"], work / f"{name}-{i:02d}.mp3", **style)
 
     asyncio.run(say_all())
-    lengths = {}
+
+    lengths, cut = {}, 0.0
     for name in order:
-        lengths[name] = duration(BUILD / f"{name}.mp3")
-        print(f"  {name}: {lengths[name]:.1f} с")
+        pieces = []
+        for i, part in enumerate(script[name]):
+            if "pause" in part:
+                pieces.append(silence(part["pause"], work / f"{name}-{i:02d}-pause.wav"))
+            else:
+                wav, dropped = trim_to_wav(work / f"{name}-{i:02d}.mp3", work / f"{name}-{i:02d}.wav")
+                pieces.append(wav)
+                cut += dropped
+        lengths[name] = duration(concat(pieces, BUILD / f"{name}.wav"))
+        shape = " ".join(
+            f"‹{part['pause']:.2f}с›" if "pause" in part else part["manner"][:4]
+            for part in script[name]
+        )
+        print(f"  {name}: {lengths[name]:.1f} с — {shape}")
+    print(f"  срезано тишины по краям фрагментов: {cut:.0f} с")
     return lengths
 
 
 # ------------------------------------------------------------------ действия сцен
 
 def scroll_to(pg, selector: str, offset: int = 130, pause: int = 900) -> None:
-    """Плавно подводим блок под шапку: в записи это читается как взгляд человека."""
-    pg.evaluate(
+    """Плавно подводим блок под шапку: в записи это читается как взгляд человека.
+
+    Пропавший селектор роняет сборку: иначе сцена молча стоит на прежнем месте,
+    а реплика продолжает рассказывать про блок, которого в кадре нет.
+    """
+    missing = pg.evaluate(
         """(args) => {
             const el = document.querySelector(args.selector);
-            if (!el) return;
+            if (!el) return args.selector;
             const top = el.getBoundingClientRect().top + window.scrollY - args.offset;
             window.scrollTo({top, behavior: 'smooth'});
+            return '';
         }""",
         {"selector": selector, "offset": offset},
     )
+    if missing:
+        raise SystemExit(f"в кадре нет блока {missing} — реплика разойдётся с экраном")
     pg.wait_for_timeout(pause)
 
 
@@ -128,12 +310,87 @@ def to_top(pg, pause: int = 900) -> None:
     pg.wait_for_timeout(pause)
 
 
-def act_intro(pg, base: str) -> None:
+# Стартовая заставка: та же дизайн-система, что и в кабинете, и те же тексты —
+# название, версия и подзаголовок берутся со страницы, а не пишутся здесь второй раз
+TITLE_CSS = """
+#screencast-title {
+  position: fixed; inset: 0; z-index: 10000; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0;
+  background: var(--color-bg); color: var(--color-text); text-align: center;
+}
+#screencast-title .mark { display: flex; align-items: center; gap: 20px; }
+#screencast-title img { width: 84px; height: 84px; }
+#screencast-title h1 {
+  margin: 0; font-family: var(--font-heading); font-weight: 800; font-size: 62px;
+  letter-spacing: -.025em; line-height: 1;
+}
+#screencast-title .ver {
+  align-self: flex-start; margin-top: 10px; padding: 2px 7px; font-size: 14px;
+  font-weight: 600; color: var(--color-neutral-600); border: 1px solid var(--color-neutral-300);
+}
+#screencast-title .rule {
+  height: 2px; width: 0; margin: 34px auto; background: var(--color-accent);
+  animation: sc-rule .9s cubic-bezier(.2,.7,.2,1) .45s forwards;
+}
+#screencast-title .lead { margin: 0; font-size: 23px; line-height: 1.35; max-width: 760px; }
+#screencast-title .parts {
+  margin: 16px 0 0; font-size: 15px; line-height: 1.5; max-width: 720px;
+  color: var(--color-neutral-600);
+}
+#screencast-title .inner { animation: sc-rise 1s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes sc-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes sc-rule { to { width: 260px; } }
+"""
+
+TITLE_JS = """() => {
+    const brand = document.querySelector('.nav-brand');
+    const logo = brand && brand.querySelector('.logo');
+    const ver = document.querySelector('#app-version');
+    const lead = document.querySelector('.foot-lead');
+    if (!brand || !logo || !ver || !lead) return 'на странице нет бренда, версии или подзаголовка подвала';
+    const name = [...brand.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+    if (!name) return 'в шапке нет названия сервиса';
+    const said = lead.textContent.trim();
+    const cut = said.indexOf(':');
+    const head = cut > 0 ? said.slice(0, cut) : said.replace(/\\.$/, '');
+    const parts = cut > 0 ? said.slice(cut + 1).replace(/\\.$/, '').split(', ').join(' · ') : '';
+    const card = document.createElement('div');
+    card.id = 'screencast-title';
+    card.innerHTML = `<div class="inner">
+        <div class="mark"><img src="${logo.getAttribute('src')}" alt="">
+          <h1>${name}</h1><span class="ver">${ver.textContent.trim()}</span></div>
+        <div class="rule"></div>
+        <p class="lead">${head}</p>
+        <p class="parts">${parts}</p>
+      </div>`;
+    document.body.appendChild(card);
+    return '';
+}"""
+
+
+def act_title(pg, base: str) -> None:
     pg.goto(f"{base}/?role=manager")
-    pg.wait_for_selector("#geo-map g[data-district]")
-    pg.wait_for_timeout(3000)
-    scroll_to(pg, "#channel-chips", 220, 3500)  # восемь каналов из реплики — на экране
-    to_top(pg, 1500)
+    pg.wait_for_selector("#geo-map g[data-district]")  # ждём шрифты, логотип и подвал
+    pg.add_style_tag(content=TITLE_CSS + CAPTION_CSS)
+    complaint = pg.evaluate(TITLE_JS)
+    if complaint:
+        raise SystemExit(f"заставку не собрали: {complaint}")
+    pg.wait_for_timeout(1000)
+
+
+def act_intro(pg, _base: str) -> None:
+    pg.evaluate(
+        """() => {
+            const card = document.querySelector('#screencast-title');
+            if (!card) return;
+            card.style.transition = 'opacity .6s ease';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 650);
+        }"""
+    )
+    pg.wait_for_timeout(3200)
+    scroll_to(pg, "#channel-chips", 220, 6500)  # восемь каналов из реплики — на экране
+    to_top(pg, 2000)
 
 
 def act_brief(pg, _base: str) -> None:
@@ -156,6 +413,7 @@ def act_brief(pg, _base: str) -> None:
     pg.wait_for_timeout(2200)
     pg.click("#geo-presets button:nth-child(1)")  # вся Россия
     pg.wait_for_timeout(1500)
+    scroll_to(pg, "#f-geo", 200, 5000)  # карта, округа и строка про пересчёт ёмкости
 
 
 def caption_host(pg, into_dialog: bool) -> None:
@@ -190,6 +448,11 @@ def act_plan(pg, _base: str) -> None:
     to_top(pg, 500)
     pg.click("#btn-demo1")
     pg.wait_for_selector("#plan-table table", timeout=60000)
+    # реплика называет прогноз и цену вслух: если сервис отдал другие, сборку роняем
+    tiles = pg.text_content("#plan-body .stats") or ""
+    for said in ("2 280", "526"):
+        if said not in tiles.replace("\u00a0", " "):
+            raise SystemExit(f"в плитках плана нет числа {said}, а реплика его называет: {tiles[:160]}")
     pg.wait_for_timeout(7500)  # плитки: прогноз, разброс, бюджет
     scroll_to(pg, "#plan-table", 150, 15000)  # таблица каналов с ценой следующей конверсии
 
@@ -263,9 +526,11 @@ def act_shock(pg, _base: str) -> None:
         raise SystemExit(f"плеер не встал на час шока {hour}: кампания упёрлась в ждущую карточку")
     pg.evaluate("(hour) => focusStop(hour)", hour)
     pg.wait_for_timeout(300)
+    if pg.evaluate("() => RUN._blocked != null"):
+        raise SystemExit("кампания встала по правилу: до часа шока нужно решить ждущую карточку")
     banner = pg.text_content("#decision-banner") or ""
-    if "событие" not in banner:
-        raise SystemExit(f"кабинет не написал причину остановки: {banner[:120]}")
+    if not any(word in banner for word in ("событие", "шок")):
+        raise SystemExit(f"кабинет не написал причину остановки: {banner[:140]}")
     pg.wait_for_timeout(6500)
     settled(pg)
     pg.click("#p-next")  # следующая остановка — детектор и перенос из мёртвого канала
@@ -299,16 +564,18 @@ def act_summary(pg, _base: str) -> None:
         to_top(pg, 300)
         pg.click("#p-end")
         pg.wait_for_timeout(1300)
+    settled(pg)  # флаг конца встаёт синхронно, а правило может уже пересчитывать прогон
     if not pg.evaluate("() => !!(RUN && RUN._ended)"):
         raise SystemExit("кампания не дошла до конца — итога нет")
+    pg.wait_for_selector("#run-done-cta button", timeout=30000)
     cta = pg.query_selector("#run-done-cta button")
     if cta is None:
         raise SystemExit("кнопки «К итогу» нет, хотя кампания закончилась")
     cta.click()
     pg.wait_for_selector("#summary-body .stats", timeout=30000)
-    pg.wait_for_timeout(9000)  # «Коротко»: обещали и получили
+    pg.wait_for_timeout(7000)  # «Коротко»: обещали и получили
     pg.evaluate("window.scrollBy({top: 180, behavior: 'smooth'})")
-    pg.wait_for_timeout(10000)  # плитки: обещание, цена по факту, возврат, что дало ведение
+    pg.wait_for_timeout(8000)  # плитки: обещание, цена по факту, возврат, что дало ведение
 
 
 def act_refusal(pg, base: str) -> None:
@@ -324,7 +591,7 @@ def act_refusal(pg, base: str) -> None:
 
 
 SCENES = [
-    ("intro", act_intro), ("brief", act_brief), ("rules", act_rules), ("plan", act_plan),
+    ("title", act_title), ("intro", act_intro), ("brief", act_brief), ("rules", act_rules), ("plan", act_plan),
     ("periods", act_periods), ("manual", act_manual), ("run", act_run),
     ("shock", act_shock), ("card", act_card), ("summary", act_summary),
     ("refusal", act_refusal),
@@ -371,25 +638,11 @@ def reload_cabinet(pg, base: str) -> None:
 
 def build_audio(order: list[str], actual: dict[str, float]) -> Path:
     """Дорожка из реплик с тишиной до фактической длины каждой сцены."""
-    parts = []
-    for name in order:
-        wav = BUILD / f"{name}.wav"
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(BUILD / f"{name}.mp3"),
-             "-af", f"apad=whole_dur={actual[name]:.3f}", "-t", f"{actual[name]:.3f}",
-             "-ar", "44100", "-ac", "2", str(wav)],
-            check=True,
-        )
-        parts.append(wav)
-    listing = BUILD / "audio.txt"
-    listing.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
-    track = BUILD / "voice.wav"
-    subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-         "-c", "copy", str(track)],
-        check=True, cwd=str(BUILD),
-    )
-    return track
+    padded = [
+        to_wav(BUILD / f"{name}.wav", BUILD / "parts" / f"{name}-scene.wav", actual[name])
+        for name in order
+    ]
+    return concat(padded, BUILD / "voice.wav")
 
 
 def main() -> None:
@@ -397,6 +650,8 @@ def main() -> None:
     parser.add_argument("--base", default="http://127.0.0.1:8001")
     parser.add_argument("--out", type=Path, default=ROOT / "docs" / "screencast.mp4")
     args = parser.parse_args()
+
+    from playwright.sync_api import sync_playwright  # нужен только записи, не синтезу
 
     scenes = read_scenes()
     missing = [name for name, _ in SCENES if name not in scenes]
@@ -422,10 +677,8 @@ def main() -> None:
         page.on("dialog", lambda d: d.accept())
         for name, action in SCENES:
             started = time.perf_counter()
-            if name == "intro":  # до загрузки страницы субтитр вставлять некуда
+            if name == "title":  # на заставке субтитр не нужен: она сама и есть текст
                 action(page, args.base)
-                page.add_style_tag(content=CAPTION_CSS)
-                show_caption(page, scenes[name]["subtitle"])
             else:
                 show_caption(page, scenes[name]["subtitle"])
                 action(page, args.base)
