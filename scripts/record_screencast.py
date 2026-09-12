@@ -247,8 +247,16 @@ async def synth_fragment(text: str, path: Path, voice: str = VOICE, rate: str = 
     return path
 
 
-def synthesize(scenes: dict[str, dict[str, str]], order: list[str]) -> dict[str, float]:
-    """Озвучиваем реплики по фрагментам и возвращаем длительность каждой сцены."""
+def synthesize(
+    scenes: dict[str, dict[str, str]], order: list[str]
+) -> tuple[dict[str, float], dict[str, list[tuple[str, float]]]]:
+    """Озвучиваем реплики по фрагментам.
+
+    Возвращаем длительность каждой сцены и метки: с какой секунды внутри сцены
+    звучит каждый фрагмент. По меткам действия сцены ждут нужную реплику, а не
+    отсчитывают секунды: текст правят часто, и от руки подогнанные задержки
+    разъезжаются с озвучкой при первой же правке.
+    """
     work = BUILD / "parts"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
@@ -264,16 +272,20 @@ def synthesize(scenes: dict[str, dict[str, str]], order: list[str]) -> dict[str,
 
     asyncio.run(say_all())
 
-    lengths, cut = {}, 0.0
+    lengths, marks, cut = {}, {}, 0.0
     for name in order:
-        pieces = []
+        pieces, at, clock = [], [], 0.0
         for i, part in enumerate(script[name]):
             if "pause" in part:
                 pieces.append(silence(part["pause"], work / f"{name}-{i:02d}-pause.wav"))
+                clock += part["pause"]
             else:
                 wav, dropped = trim_to_wav(work / f"{name}-{i:02d}.mp3", work / f"{name}-{i:02d}.wav")
                 pieces.append(wav)
+                at.append((part["text"], clock))
+                clock += duration(wav)
                 cut += dropped
+        marks[name] = at
         lengths[name] = duration(concat(pieces, BUILD / f"{name}.wav"))
         shape = " ".join(
             f"‹{part['pause']:.2f}с›" if "pause" in part else part["manner"][:4]
@@ -281,7 +293,29 @@ def synthesize(scenes: dict[str, dict[str, str]], order: list[str]) -> dict[str,
         )
         print(f"  {name}: {lengths[name]:.1f} с — {shape}")
     print(f"  срезано тишины по краям фрагментов: {cut:.0f} с")
-    return lengths
+    return lengths, marks
+
+
+class Cue:
+    """Ожидание нужной реплики внутри сцены.
+
+    `cue("Вернуть расчёт")` держит действие, пока озвучка не дойдёт до фрагмента
+    с этими словами. Якорь — текст, а не номер: правка реплики выше не сдвигает
+    остальные кадры, а исчезнувший якорь роняет сборку, вместо того чтобы тихо
+    показать не то.
+    """
+
+    def __init__(self, pg, started: float, marks: list[tuple[str, float]], scene: str) -> None:
+        self.pg, self.started, self.marks, self.scene = pg, started, marks, scene
+
+    def __call__(self, marker: str, plus: float = 0.0) -> None:
+        flat = marker.replace(ACUTE, "").lower()
+        found = [at for text, at in self.marks if flat in text.replace(ACUTE, "").lower()]
+        if not found:
+            raise SystemExit(f"сцена {self.scene}: в реплике нет слов «{marker}» — кадр не к чему привязать")
+        left = found[0] + plus - (time.perf_counter() - self.started)
+        if left > 0:
+            self.pg.wait_for_timeout(int(left * 1000))
 
 
 # ------------------------------------------------------------------ действия сцен
@@ -382,7 +416,7 @@ TITLE_JS = """() => {
 }"""
 
 
-def act_title(pg, base: str) -> None:
+def act_title(pg, base: str, _cue) -> None:
     pg.goto(f"{base}/?role=manager")
     pg.wait_for_selector("#geo-map g[data-district]")  # ждём шрифты, логотип и подвал
     pg.add_style_tag(content=TITLE_CSS + CAPTION_CSS)
@@ -413,7 +447,7 @@ OUTRO_JS = """(repo) => {
 }"""
 
 
-def act_outro(pg, _base: str) -> None:
+def act_outro(pg, _base: str, _cue) -> None:
     pg.add_style_tag(content=TITLE_CSS + OUTRO_CSS)
     complaint = pg.evaluate(OUTRO_JS, REPO)
     if complaint:
@@ -421,7 +455,7 @@ def act_outro(pg, _base: str) -> None:
     pg.wait_for_timeout(1500)
 
 
-def act_intro(pg, _base: str) -> None:
+def act_intro(pg, _base: str, _cue) -> None:
     pg.evaluate(
         """() => {
             const card = document.querySelector('#screencast-title');
@@ -436,30 +470,30 @@ def act_intro(pg, _base: str) -> None:
     to_top(pg, 2000)
 
 
-def act_brief(pg, _base: str) -> None:
-    # порядок кадров — порядок реплики: сначала верх брифа, потом сегмент и карта,
-    # и только в конце вводим бюджет примера, о котором реплика говорит последней
-    pg.wait_for_timeout(3000)
-    scroll_to(pg, "#f-target", 120, 1500)
+def act_brief(pg, _base: str, cue) -> None:
+    pg.wait_for_timeout(600)  # верх брифа: бюджет, срок и набор каналов
+    cue("Сегмент аудитории")
+    scroll_to(pg, "#f-target", 120, 500)
     for key in ("25_34", "35_44"):  # сузили сегмент — видно долю аудитории
         pg.click(f".tag[data-ax=age_groups][data-k='{key}']")
-        pg.wait_for_timeout(1100)
-    pg.wait_for_timeout(1400)
+        pg.wait_for_timeout(1000)
+    pg.wait_for_timeout(800)
     for key in ("25_34", "35_44"):
         pg.click(f".tag[data-ax=age_groups][data-k='{key}']")
+    cue("по географии")
     # пресеты географии, а не клики по карте: у «всей России» выбрано всё, и клик
     # по округу читался бы как снятие, а не как выбор
     pg.click("#geo-presets button:nth-child(4)")  # только Центральный
-    pg.wait_for_timeout(2000)
+    pg.wait_for_timeout(1600)
     pg.click("#geo-presets button:nth-child(2)")  # европейская часть
-    pg.wait_for_timeout(2000)
+    pg.wait_for_timeout(1600)
     pg.click("#geo-presets button:nth-child(1)")  # вся Россия
-    scroll_to(pg, "#f-geo", 200, 3500)  # карта, округа и строка про пересчёт ёмкости
-    to_top(pg, 1200)
+    scroll_to(pg, "#f-geo", 200, 400)  # карта, округа и строка про пересчёт ёмкости
+    cue("Для примера")
+    to_top(pg, 700)
     pg.click("#budget")
     pg.fill("#budget", "")
     pg.type("#budget", "1200000", delay=110)
-    pg.wait_for_timeout(2500)
 
 
 def caption_host(pg, into_dialog: bool) -> None:
@@ -474,7 +508,7 @@ def caption_host(pg, into_dialog: bool) -> None:
     )
 
 
-def act_rules(pg, _base: str) -> None:
+def act_rules(pg, _base: str, _cue) -> None:
     scroll_to(pg, "#rules-row", 220, 900)
     pg.click("#btn-rules")
     caption_host(pg, True)
@@ -490,7 +524,7 @@ def act_rules(pg, _base: str) -> None:
     pg.wait_for_timeout(2500)  # строка правил на брифе пересобралась под новый лимит
 
 
-def act_plan(pg, _base: str) -> None:
+def act_plan(pg, _base: str, _cue) -> None:
     to_top(pg, 500)
     pg.click("#btn-demo1")
     pg.wait_for_selector("#plan-table table", timeout=60000)
@@ -503,15 +537,16 @@ def act_plan(pg, _base: str) -> None:
     scroll_to(pg, "#plan-table", 150, 15000)  # таблица каналов с ценой следующей конверсии
 
 
-def act_periods(pg, _base: str) -> None:
+def act_periods(pg, _base: str, _cue) -> None:
     scroll_to(pg, "#plan-periods", 130, 3800)
     pg.click("#periods-seg button[data-p=days]")
     pg.wait_for_timeout(4200)
     scroll_to(pg, "#plan-geo", 130, 4500)
 
 
-def act_manual(pg, _base: str) -> None:
-    scroll_to(pg, "#manual-block", 130, 1200)
+def act_manual(pg, _base: str, cue) -> None:
+    scroll_to(pg, "#manual-block", 130, 600)
+    cue("Двигаете бегунок")
     bar = pg.query_selector("#chan-sliders .sl:nth-child(4) input[type=range]")
     if bar is None:
         raise SystemExit("нет бегунков ручной правки — сцену снимать не на чем")
@@ -521,12 +556,15 @@ def act_manual(pg, _base: str) -> None:
     note = pg.text_content("#manual-note") or ""
     if "не принимает" not in note:  # реплика говорит про срез по ёмкости — он должен случиться
         raise SystemExit(f"фиксация не упёрлась в ёмкость, реплика разойдётся с экраном: {note[:120]}")
-    # пересчёт плана возвращает страницу наверх сам: там и виден новый прогноз
-    pg.wait_for_timeout(5500)
-    scroll_to(pg, "#manual-note", 300, 7000)  # чем обернулась фиксация — словами
+    # пересчёт плана возвращает страницу наверх сам, поэтому возвращаемся к блоку
+    scroll_to(pg, "#manual-block", 140, 300)
+    cue("прогноз пересчитывается")
+    to_top(pg, 300)  # пересчитанные плитки: чего стоит своя идея
+    cue("упёрлась в ёмкость")
+    scroll_to(pg, "#manual-block", 140, 300)  # блок целиком: срез по ёмкости и кнопка
+    cue("Вернуть расчёт", plus=1.8)
     pg.click("#btn-manual-reset")  # правка отменена: дальше утверждаем расчётный план
     pg.wait_for_selector("#btn-manual-reset[disabled]", timeout=60000)
-    pg.wait_for_timeout(5500)
 
 
 def settled(pg) -> None:
@@ -534,7 +572,7 @@ def settled(pg) -> None:
     pg.wait_for_function("() => !DECIDING && !AUTO_BUSY", timeout=180000)
 
 
-def act_run(pg, _base: str) -> None:
+def act_run(pg, _base: str, _cue) -> None:
     scroll_to(pg, "#plan-foot", 320, 900)
     pg.click("#btn-approve2")
     pg.wait_for_selector("#btn-gorun2", timeout=60000)
@@ -550,7 +588,7 @@ def act_run(pg, _base: str) -> None:
     scroll_to(pg, "#digest", 200, 4000)  # сводка часа: прошло, потрачено, получено
 
 
-def act_shock(pg, _base: str) -> None:
+def act_shock(pg, _base: str, _cue) -> None:
     hour = pg.evaluate("() => (RUN.scenarioHours || [])[0] || 241")
     # до часа шока кабинет доезжает не сразу: ранние карточки никто не решал, и правило
     # применяет их само, каждый раз пересчитывая прогон и сдвигая плеер на свой стоп.
@@ -586,7 +624,7 @@ def act_shock(pg, _base: str) -> None:
     scroll_to(pg, "#feed-short", 200, 6500)  # события часа словами
 
 
-def act_card(pg, _base: str) -> None:
+def act_card(pg, _base: str, cue) -> None:
     card = "#pending-slot button[data-h][data-d=approve]"
     for _ in range(10):  # плеер встаёт и на событиях рынка: доходим до карточки
         if pg.query_selector(card):
@@ -596,13 +634,13 @@ def act_card(pg, _base: str) -> None:
         pg.wait_for_timeout(1300)
     if not pg.query_selector(card):
         raise SystemExit("карточка решения не появилась — снимать сцену не на чем")
-    scroll_to(pg, "#pending-slot", 290, 9500)  # читаем карточку целиком, потом решаем
+    scroll_to(pg, "#pending-slot", 290, 400)  # читаем карточку целиком, потом решаем
+    cue("Решение пересчитывает")
     pg.click(card)
     settled(pg)
-    pg.wait_for_timeout(7000)
 
 
-def act_summary(pg, _base: str) -> None:
+def act_summary(pg, _base: str, _cue) -> None:
     for _ in range(40):  # «К концу кампании» упирается в ждущие карточки: правило их решает
         if pg.evaluate("() => !!(RUN && RUN._ended)"):
             break
@@ -624,7 +662,7 @@ def act_summary(pg, _base: str) -> None:
     pg.wait_for_timeout(8000)  # плитки: обещание, цена по факту, возврат, что дало ведение
 
 
-def act_refusal(pg, base: str) -> None:
+def act_refusal(pg, base: str, _cue) -> None:
     # вторая постановка — отдельная история: открываем кабинет заново. Так не мешает
     # утверждённый план (кабинет спросил бы подтверждение) и не тянется состояние прогона
     reload_cabinet(pg, base)
@@ -705,7 +743,7 @@ def main() -> None:
         raise SystemExit(f"в docs/voiceover.md нет сцен: {', '.join(missing)}")
 
     print("озвучка:")
-    lengths = synthesize(scenes, [name for name, _ in SCENES])
+    lengths, marks = synthesize(scenes, [name for name, _ in SCENES])
 
     video_dir = BUILD / "video"
     shutil.rmtree(video_dir, ignore_errors=True)
@@ -723,11 +761,12 @@ def main() -> None:
         page.on("dialog", lambda d: d.accept())
         for name, action in SCENES:
             started = time.perf_counter()
+            cue = Cue(page, started, marks[name], name)
             if name in ("title", "outro"):  # карточки сами и есть текст, субтитр не нужен
-                action(page, args.base)
+                action(page, args.base, cue)
             else:
                 show_caption(page, scenes[name]["subtitle"])
-                action(page, args.base)
+                action(page, args.base, cue)
             spare = lengths[name] + TAIL - (time.perf_counter() - started)
             if spare > 0:
                 page.wait_for_timeout(int(spare * 1000))
