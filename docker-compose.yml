@@ -1,7 +1,7 @@
 services:
   mediaplan:
     build: .
-    image: mediaplan-optimizer:0.1.0
+    image: mediaplan-optimizer:0.4.0
     ports:
       - "8000:8000"
     environment:
@@ -15,7 +15,7 @@ services:
   # Стенд: три демонстрации и сравнение стратегий на 20 мирах, результаты в ./results
   demos:
     build: .
-    image: mediaplan-optimizer:0.1.0
+    image: mediaplan-optimizer:0.4.0
     profiles: ["demos"]
     command: ["python", "scripts/run_demos.py", "--seeds", "20"]
     volumes:
@@ -24,6 +24,6 @@ services:
   # Тесты: python -m pytest внутри контейнера
   tests:
     build: .
-    image: mediaplan-optimizer:0.1.0
+    image: mediaplan-optimizer:0.4.0
     profiles: ["tests"]
     command: ["python", "-m", "pytest", "-q"]

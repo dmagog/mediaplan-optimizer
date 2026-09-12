@@ -442,7 +442,7 @@ const budgetHint = () => { const v = num('budget'); $('#budget-hint').textConten
 const spct = (x) => (x > 0 ? '+' : '') + pct(x); // Δ со знаком в обе стороны
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const STATUS_RU = {ok:'в норме', watch:'наблюдаем', fire:'сбой канала'};
-// CPA, CPC — профессиональные термины (решение основателя 06.09): пишем как есть, расшифровка — в подсказке при наведении
+// CPA, CPC — профессиональные термины, решение по кабинету от 06.09: пишем как есть, расшифровка — в подсказке при наведении
 const PRICE_RU = {conversions: 'цена конверсии', clicks: 'цена клика', reach: 'цена за одного'};
 const priceWord = (k, capital=false) => `<abbr title="${PRICE_RU[k]}, ₽" style="text-decoration:none">${capital ? cap(KPI[k].price) : KPI[k].price}</abbr>`;
 const SHOCK_PARAM_RU = {ecpm:'цена (eCPM)', ctr:'кликабельность (CTR)', cvr:'конверсия (CR)', inventory:'инвентарь', demand:'спрос', pause:'пауза канала'};

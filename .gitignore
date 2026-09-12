@@ -13,3 +13,19 @@ runs/
 junit.xml
 *.egg-info/
 build/
+.claude/
+# инструкции ИИ-агентам — локальные, в публикацию не идут
+CLAUDE.md
+AGENTS.md
+# мусор редакторов и систем
+.DS_Store
+.idea/
+.vscode/
+*.log
+.coverage
+htmlcov/
+# сырые дампы демонстраций: пересобираются scripts/run_demos.py
+results/demo1_plan.json
+results/demo2_verdict.json
+results/demo3_run.json
+results/demo_geo_plan.json

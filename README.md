@@ -59,7 +59,11 @@ uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/python scripts/run_demos.py --seeds 20
 ```
 
-Кампания в 21 день считается за секунды: план 0,1 с, прогон около 1,5 с, стенд
+Установка поддерживается редактируемая (`-e`): статика кабинета и реестры
+`config/` лежат рядом с пакетами, а не внутри них, поэтому обычное колесо
+их не увезёт.
+
+Кампания в 21 день считается за секунды: план 0,1 с, прогон около 2 с, стенд
 4 стратегий на 20 парных мирах и 5 сценариях — около 8 минут, на 100 мирах
 около 40 минут (время каждого прогона пишется в конец `results/report.md`).
 
@@ -69,8 +73,9 @@ uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 |---|---|---|
 | Скринкаст с озвучкой, 4,8 минуты: заставка, постановки A и B, план, кампания, экран недостижимости, финальный слайд | [docs/screencast.mp4](docs/screencast.mp4) | `python scripts/record_screencast.py` (нужны Playwright, edge-tts, ffmpeg); текст реплик — [docs/voiceover.md](docs/voiceover.md) |
 | Снимки кабинета и гифка плеера: 15 экранов обоих кабинетов | [docs/figures/cabinet](docs/figures/cabinet) | `python scripts/shoot_cabinet.py` (нужны Playwright и Pillow) |
+| Примерка произношения для озвучки | — | `python scripts/try_voice.py "вариант" "вариант"` — читает варианты записи одной фразы и склеивает в один файл |
 | Ноутбук со сквозным сценарием и выводами | [notebooks/demo.ipynb](notebooks/demo.ipynb) | `.venv/bin/python scripts/build_demo_notebook.py` |
-| Итоговый отчёт одним файлом | [report/report.html](report/report.html) | `.venv/bin/python scripts/build_report.py` |
+| Итоговый отчёт одним файлом | [report/report.html](report/report.html) | `.venv/bin/python scripts/build_report.py` (нужен markdown-it-py) |
 
 Ноутбук проходит весь путь на пакетах проекта: каталог, план типа A, метрики
 по плану целиком, недостижимая цель типа B с готовыми ходами, кампания по
@@ -270,3 +275,15 @@ HTTP-API нет.
 
 **Команда.** Родион Оркин — планировщик и исполнитель. Тимофей Лисоченко —
 модель рынка. Георгий Мамарин — продукт и кабинет.
+
+## Лицензия и сторонние материалы
+
+Код — [Apache 2.0](LICENSE).
+
+Сторонние материалы лежат в репозитории, чтобы демо открывалось без сети;
+версии, ссылки и тексты лицензий — в
+[app/static/vendor/README.md](app/static/vendor/README.md). Коротко: Chart.js
+4.4.1 — MIT, шрифты Archivo и Golos Text — SIL OFL 1.1, контуры федеральных
+округов — Natural Earth (public domain), население округов — сводка данных
+Росстата. Бенчмарки каналов взяты из публичных источников, ссылка стоит
+у каждого значения в [config/benchmarks.yaml](config/benchmarks.yaml).

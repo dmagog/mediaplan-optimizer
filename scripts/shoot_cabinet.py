@@ -15,8 +15,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 ROOT = Path(__file__).resolve().parent.parent
 ALL_CHANNELS = "META.presets.all.channels"
 DEMO1 = f"setMode('A'); setChannels({ALL_CHANNELS}); setRegions([]); setTargeting(); FORM.locked = {{}}; " \
@@ -233,6 +231,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=ROOT / "docs" / "figures" / "cabinet")
     parser.add_argument("--only", default="", help="через запятую: manager, customer, extras, gif")
     args = parser.parse_args()
+
+    from playwright.sync_api import sync_playwright  # нужен съёмке, не разбору аргументов
     args.out.mkdir(parents=True, exist_ok=True)
     only = {p.strip() for p in args.only.split(",") if p.strip()} or {"manager", "customer", "extras", "gif"}
 

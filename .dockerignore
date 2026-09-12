@@ -9,3 +9,7 @@ __pycache__
 results
 docs
 *.md
+build
+junit.xml
+report
+notebooks
