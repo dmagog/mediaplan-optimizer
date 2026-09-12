@@ -12,3 +12,4 @@ runs/
 .env
 junit.xml
 *.egg-info/
+build/
