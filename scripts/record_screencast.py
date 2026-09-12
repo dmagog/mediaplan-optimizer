@@ -38,6 +38,7 @@ RATE = "-5%"
 ACUTE = "́"  # комбинирующее ударение: движок понимает его, знак «+» читает вслух
 VOWELS = "аеёиоуыэюя"
 TAIL = 0.8  # сколько секунд сцена держится после реплики
+REPO = "github.com/dmagog/mediaplan-optimizer"  # та же ссылка, что в README
 
 
 # --------------------------------------------------------------- текст и синтез
@@ -69,13 +70,14 @@ def for_engine(speech: str) -> str:
 
 
 # Подача: как читать фрагмент. Базовая — «ровно», остальные отличаются темпом,
-# тоном и громкостью. Сильнее уводить нельзя: голос начинает звучать как
-# объявление на вокзале. Проверять только на слух — `scripts/try_voice.py`.
+# тоном и громкостью. Темп уводим от базы не больше чем на четыре пункта: при
+# −16 % «веско» слышалось искусственно замедленным, при +7 % «живее» тараторило.
+# Вес держится тоном, а не темпом. Проверять только на слух — `scripts/try_voice.py`.
 MANNER = {
     "ровно": {"rate": "-5%", "pitch": "-8Hz", "volume": "+0%"},
-    "веско": {"rate": "-16%", "pitch": "-14Hz", "volume": "+0%"},
-    "живее": {"rate": "+7%", "pitch": "-4Hz", "volume": "+0%"},
-    "тише": {"rate": "-9%", "pitch": "-10Hz", "volume": "-20%"},
+    "веско": {"rate": "-9%", "pitch": "-13Hz", "volume": "+0%"},
+    "живее": {"rate": "-1%", "pitch": "-6Hz", "volume": "+0%"},
+    "тише": {"rate": "-8%", "pitch": "-10Hz", "volume": "-18%"},
 }
 PAUSE_MS = 350  # «(пауза)» без числа
 MARK_RE = re.compile(r"\((пауза|" + "|".join(MANNER) + r")(?:\s+(\d{2,4}))?\)")
@@ -342,6 +344,18 @@ TITLE_CSS = """
 @keyframes sc-rule { to { width: 260px; } }
 """
 
+OUTRO_CSS = """
+#screencast-title.outro h1 { font-size: 54px; }
+#screencast-title .brand {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  font-family: var(--font-heading); font-weight: 800; font-size: 21px;
+}
+#screencast-title .brand img { width: 30px; height: 30px; }
+#screencast-title .link {
+  margin: 26px 0 0; font-family: var(--font-heading); font-weight: 600; font-size: 23px;
+}
+"""
+
 TITLE_JS = """() => {
     const brand = document.querySelector('.nav-brand');
     const logo = brand && brand.querySelector('.logo');
@@ -375,7 +389,36 @@ def act_title(pg, base: str) -> None:
     complaint = pg.evaluate(TITLE_JS)
     if complaint:
         raise SystemExit(f"заставку не собрали: {complaint}")
-    pg.wait_for_timeout(1000)
+    # блок всплывает секунду, линейка дорастает к 1,35 с: без этой задержки
+    # заставка держится в готовом виде меньше четырёх секунд и читается мельком
+    pg.wait_for_timeout(3500)
+
+
+OUTRO_JS = """(repo) => {
+    const brand = document.querySelector('.nav-brand');
+    const logo = brand && brand.querySelector('.logo');
+    if (!brand || !logo) return 'на странице нет бренда';
+    const name = [...brand.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+    const card = document.createElement('div');
+    card.id = 'screencast-title';
+    card.className = 'outro';
+    card.innerHTML = `<div class="inner">
+        <div class="brand"><img src="${logo.getAttribute('src')}" alt="">${name}</div>
+        <div class="rule"></div>
+        <h1>Спасибо за внимание</h1>
+        <p class="link">${repo}</p>
+      </div>`;
+    document.body.appendChild(card);
+    return '';
+}"""
+
+
+def act_outro(pg, _base: str) -> None:
+    pg.add_style_tag(content=TITLE_CSS + OUTRO_CSS)
+    complaint = pg.evaluate(OUTRO_JS, REPO)
+    if complaint:
+        raise SystemExit(f"финальную карточку не собрали: {complaint}")
+    pg.wait_for_timeout(1500)
 
 
 def act_intro(pg, _base: str) -> None:
@@ -394,11 +437,10 @@ def act_intro(pg, _base: str) -> None:
 
 
 def act_brief(pg, _base: str) -> None:
-    pg.click("#budget")
-    pg.fill("#budget", "")
-    pg.type("#budget", "1200000", delay=90)
-    pg.wait_for_timeout(1200)
-    scroll_to(pg, "#f-target", 120, 1200)
+    # порядок кадров — порядок реплики: сначала верх брифа, потом сегмент и карта,
+    # и только в конце вводим бюджет примера, о котором реплика говорит последней
+    pg.wait_for_timeout(3000)
+    scroll_to(pg, "#f-target", 120, 1500)
     for key in ("25_34", "35_44"):  # сузили сегмент — видно долю аудитории
         pg.click(f".tag[data-ax=age_groups][data-k='{key}']")
         pg.wait_for_timeout(1100)
@@ -408,12 +450,16 @@ def act_brief(pg, _base: str) -> None:
     # пресеты географии, а не клики по карте: у «всей России» выбрано всё, и клик
     # по округу читался бы как снятие, а не как выбор
     pg.click("#geo-presets button:nth-child(4)")  # только Центральный
-    pg.wait_for_timeout(2200)
+    pg.wait_for_timeout(2000)
     pg.click("#geo-presets button:nth-child(2)")  # европейская часть
-    pg.wait_for_timeout(2200)
+    pg.wait_for_timeout(2000)
     pg.click("#geo-presets button:nth-child(1)")  # вся Россия
-    pg.wait_for_timeout(1500)
-    scroll_to(pg, "#f-geo", 200, 5000)  # карта, округа и строка про пересчёт ёмкости
+    scroll_to(pg, "#f-geo", 200, 3500)  # карта, округа и строка про пересчёт ёмкости
+    to_top(pg, 1200)
+    pg.click("#budget")
+    pg.fill("#budget", "")
+    pg.type("#budget", "1200000", delay=110)
+    pg.wait_for_timeout(2500)
 
 
 def caption_host(pg, into_dialog: bool) -> None:
@@ -594,7 +640,7 @@ SCENES = [
     ("title", act_title), ("intro", act_intro), ("brief", act_brief), ("rules", act_rules), ("plan", act_plan),
     ("periods", act_periods), ("manual", act_manual), ("run", act_run),
     ("shock", act_shock), ("card", act_card), ("summary", act_summary),
-    ("refusal", act_refusal),
+    ("refusal", act_refusal), ("outro", act_outro),
 ]
 
 CAPTION_CSS = """
@@ -677,7 +723,7 @@ def main() -> None:
         page.on("dialog", lambda d: d.accept())
         for name, action in SCENES:
             started = time.perf_counter()
-            if name == "title":  # на заставке субтитр не нужен: она сама и есть текст
+            if name in ("title", "outro"):  # карточки сами и есть текст, субтитр не нужен
                 action(page, args.base)
             else:
                 show_caption(page, scenes[name]["subtitle"])
