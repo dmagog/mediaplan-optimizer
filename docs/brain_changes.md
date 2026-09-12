@@ -2,7 +2,7 @@
 
 Дата: 05.09.2026. Зона: `brain/`, `contracts/execution.py`, `harness/`,
 `scripts/run_demos.py`,
-`config/controller.yaml`, тесты. В `app/` не трогал: кабинет живёт в ветке Георгия.
+`config/controller.yaml`, тесты. В `app/` не трогал: кабинет ведёт другой участник команды.
 
 ## Ответы на шесть запросов из `cabinet_changes.md`
 
